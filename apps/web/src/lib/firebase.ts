@@ -350,11 +350,41 @@ export async function addAuditLog(orgId: string, user: User, event: string, reso
 }
 
 export async function requestPasswordReset(email: string) {
-  // Use client-side Firebase Auth directly (works on free tier)
-  await sendPasswordResetEmail(auth, email, {
-    url: `${window.location.origin}/login`,
-    handleCodeInApp: false,
-  })
+  const cleanEmail = email.trim()
+  if (!cleanEmail) throw new Error('Email is required.')
+
+  // 1. Send via Firebase Auth directly without brittle actionCodeSettings to prevent unauthorized-continue-uri errors
+  try {
+    await sendPasswordResetEmail(auth, cleanEmail)
+    console.info('[Firebase Auth] Password reset email sent to:', cleanEmail)
+    return { sent: true }
+  } catch (error: any) {
+    console.warn('[Firebase Auth] Standard reset attempt failed, retrying with continue URL:', error?.code || error)
+    // Retry with continue URL
+    try {
+      await sendPasswordResetEmail(auth, cleanEmail, {
+        url: `${window.location.origin}/login`,
+        handleCodeInApp: false,
+      })
+      return { sent: true }
+    } catch (fallbackError) {
+      // Try sending via serverless API if available
+      try {
+        const resp = await fetch('/api/send-reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: cleanEmail, resetUrl: `${window.location.origin}/login` }),
+        })
+        if (resp.ok) {
+          const resData = await resp.json()
+          if (resData.success) return { sent: true }
+        }
+      } catch {
+        // ignore
+      }
+      throw error
+    }
+  }
 }
 
 export async function startInvestigation(question: string) {
@@ -435,8 +465,13 @@ export async function signInWithPassword(email: string, password: string) {
 export async function signInWithSocialProvider(provider: AuthProvider) {
   try {
     const credential = await signInWithPopup(auth, provider)
+    const isNewFromAuth = getAdditionalUserInfo(credential)?.isNewUser === true
+    const profileRef = doc(db, 'users', credential.user.uid)
+    const existingSnap = await getDoc(profileRef)
+    const isNewUser = isNewFromAuth || !existingSnap.exists() || existingSnap.data()?.welcomeEmailSent !== true
+
     await ensureUserProfile(credential.user)
-    return { user: credential.user, isNewUser: getAdditionalUserInfo(credential)?.isNewUser === true }
+    return { user: credential.user, isNewUser }
   } catch (error) {
     const code = error instanceof Error && 'code' in error ? String(error.code) : ''
     if (code === 'auth/popup-blocked' || code === 'auth/popup-closed-by-user') {
@@ -450,13 +485,64 @@ export async function signInWithSocialProvider(provider: AuthProvider) {
 export async function resolveRedirectSignIn() {
   const credential = await getRedirectResult(auth)
   if (!credential) return null
+  const isNewFromAuth = getAdditionalUserInfo(credential)?.isNewUser === true
+  const profileRef = doc(db, 'users', credential.user.uid)
+  const existingSnap = await getDoc(profileRef)
+  const isNewUser = isNewFromAuth || !existingSnap.exists() || existingSnap.data()?.welcomeEmailSent !== true
+
   await ensureUserProfile(credential.user)
-  return { user: credential.user, isNewUser: getAdditionalUserInfo(credential)?.isNewUser === true }
+  return { user: credential.user, isNewUser }
 }
 
-export async function sendWelcomeEmail(_user: User) {
-  // Welcome email requires Cloud Functions (Blaze plan). On free tier, skip silently.
-  console.info('[Firebase] Welcome email skipped — Cloud Functions not available on free tier.')
+export async function sendWelcomeEmail(user: User) {
+  if (!user.email) return
+
+  try {
+    const profileRef = doc(db, 'users', user.uid)
+    const profileSnap = await getDoc(profileRef)
+    if (profileSnap.exists() && profileSnap.data()?.welcomeEmailSent === true) {
+      console.info('[Email] Welcome email already marked as sent for:', user.email)
+      return
+    }
+
+    const name = user.displayName || user.email.split('@')[0] || 'there'
+
+    // 1. Dispatch greeting email via /api/send-welcome (Vercel serverless function or dev server)
+    try {
+      const response = await fetch('/api/send-welcome', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: user.email,
+          name,
+          appUrl: window.location.origin,
+        }),
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        if (result.success) {
+          console.info('[Email] Welcome email successfully dispatched to:', user.email)
+        } else if (result.warning) {
+          console.warn('[Email]', result.warning)
+        }
+      }
+    } catch (apiError) {
+      console.warn('[Email] /api/send-welcome request error:', apiError)
+    }
+
+    // Record welcomeEmailSent status in Firestore to avoid duplicate sends
+    await setDoc(
+      profileRef,
+      {
+        welcomeEmailSent: true,
+        welcomeEmailSentAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+  } catch (err) {
+    console.warn('[Email] Welcome email processing warning:', err)
+  }
 }
 
 export function firebaseErrorMessage(error: unknown) {
@@ -468,11 +554,14 @@ export function firebaseErrorMessage(error: unknown) {
     'auth/email-already-in-use': 'An account already exists with this email.',
     'auth/weak-password': 'Use a password with at least 6 characters.',
     'auth/invalid-email': 'Enter a valid work email address.',
+    'auth/missing-email': 'Please provide an email address.',
     'auth/user-not-found': 'No account was found for this email address.',
     'auth/popup-closed-by-user': 'The sign-in window was closed before completing sign-in.',
     'auth/account-exists-with-different-credential': 'An account already exists with a different sign-in method.',
     'auth/operation-not-allowed': 'This sign-in method is not enabled in Firebase yet.',
     'auth/unauthorized-domain': 'This domain is not authorized for sign-in. Add it in the Firebase Console under Authentication → Settings → Authorized domains.',
+    'auth/unauthorized-continue-uri': 'This domain is not authorized for password reset. Check Firebase Console → Authentication → Authorized domains.',
+    'auth/invalid-continue-uri': 'The password reset return link is invalid.',
     'auth/network-request-failed': 'A network error occurred. Check your internet connection and try again.',
     'auth/too-many-requests': 'Too many unsuccessful attempts. Please wait a moment and try again.',
     'auth/user-disabled': 'This account has been disabled. Contact support for help.',
