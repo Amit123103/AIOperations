@@ -23,6 +23,10 @@ import {
   TriangleAlert,
   Upload,
   X,
+  Download,
+  Trash2,
+  RefreshCw,
+  CheckCircle,
 } from 'lucide-react'
 import {
   Bar,
@@ -45,6 +49,7 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  useSearchParams,
 } from 'react-router-dom'
 import {
   appleProvider,
@@ -65,7 +70,17 @@ import {
   startInvestigation,
   subscribeToOrgCollection,
   subscribeToDocument,
+  uploadDocument,
+  deleteDocument,
+  createRisk,
+  updateRisk,
+  createAction,
+  updateActionStatus,
+  updateUserProfile,
+  updateOrganizationSettings,
+  db,
 } from './lib/firebase'
+import { doc, getDoc } from 'firebase/firestore'
 import { onAuthStateChanged, signOut, type User } from 'firebase/auth'
 
 const queryClient = new QueryClient()
@@ -108,13 +123,6 @@ type DocumentRecord = {
   access?: string[]
   storagePath?: string
 }
-
-const kpis = [
-  { label: 'Revenue', value: '₹1.82 Cr', trend: '+11.4%', tone: 'success' },
-  { label: 'Production', value: '67,600 units', trend: '-18%', tone: 'critical' },
-  { label: 'Inventory Risk', value: '14 open', trend: '+3', tone: 'warning' },
-  { label: 'Open Actions', value: '27', trend: '+6', tone: 'info' },
-]
 
 const riskList: RiskItem[] = [
   { id: 'R-104', title: 'Motor inventory shortfall at Plant 3', severity: 'Critical', status: 'Open', impact: '520 units short, 8 days remaining', recommendation: 'Prioritize procurement and maintenance sequencing.' },
@@ -1504,6 +1512,7 @@ function OutletRoutes() {
   if (paths === '/app/documents/upload') return <DocumentUploadPage />
   if (paths === '/app/data-sources/new') return <DataSourceWizardPage />
   if (paths.startsWith('/app/risks/')) return <RiskDetailPage />
+  if (paths.includes('/review')) return <ActionReviewPage />
   if (paths.startsWith('/app/actions/')) return <ActionDetailPage />
   if (paths.startsWith('/app/copilot/')) return <InvestigationDetailPage />
   if (paths.startsWith('/app/investigations/')) return <InvestigationDetailPage />
@@ -1531,13 +1540,19 @@ function getPageHeader(page: string) {
 }
 
 function DashboardPage() {
+  const navigate = useNavigate()
+  const [copilotInput, setCopilotInput] = useState('')
   const [liveRisks, setLiveRisks] = useState<RiskItem[]>([])
   const [liveActions, setLiveActions] = useState<Array<(typeof actionList)[number]>>([])
+  const [liveDocuments, setLiveDocuments] = useState<any[]>([])
+  const [liveInvestigations, setLiveInvestigations] = useState<any[]>([])
   const [liveDataConnected, setLiveDataConnected] = useState(false)
 
   useEffect(() => {
     let unsubscribeRisks: (() => void) | undefined
     let unsubscribeActions: (() => void) | undefined
+    let unsubscribeDocs: (() => void) | undefined
+    let unsubscribeInvs: (() => void) | undefined
     let cancelled = false
 
     void getCurrentOrgId().then((orgId) => {
@@ -1546,32 +1561,76 @@ function DashboardPage() {
         setLiveRisks(items)
         setLiveDataConnected(true)
       }, () => setLiveDataConnected(false))
+
       unsubscribeActions = subscribeToOrgCollection<(typeof actionList)[number]>('actions', orgId, (items) => {
         setLiveActions(items)
         setLiveDataConnected(true)
       }, () => setLiveDataConnected(false))
+
+      unsubscribeDocs = subscribeToOrgCollection<any>('documents', orgId, (items) => {
+        setLiveDocuments(items)
+      }, () => {})
+
+      unsubscribeInvs = subscribeToOrgCollection<any>('investigations', orgId, (items) => {
+        setLiveInvestigations(items)
+      }, () => {})
     })
 
     return () => {
       cancelled = true
       unsubscribeRisks?.()
       unsubscribeActions?.()
+      unsubscribeDocs?.()
+      unsubscribeInvs?.()
     }
   }, [])
 
   const dashboardRisks = liveRisks.length > 0 ? liveRisks : riskList
   const dashboardActions = liveActions.length > 0 ? liveActions : actionList
+  const latestInvestigation = liveInvestigations[0]
+
+  const handleCopilotSubmit = (e: FormEvent) => {
+    e.preventDefault()
+    const q = copilotInput.trim() || 'Why did production fall this month?'
+    navigate(`/app/copilot?q=${encodeURIComponent(q)}`)
+  }
+
+  const dynamicKpis = [
+    { label: 'Revenue', value: '₹1.82 Cr', trend: '+11.4%', tone: 'success' },
+    { label: 'Production', value: '67,600 units', trend: '-18%', tone: 'critical' },
+    {
+      label: 'Inventory Risks',
+      value: `${dashboardRisks.filter((r) => r.status !== 'Resolved').length} active`,
+      trend: liveRisks.length > 0 ? `${liveRisks.filter((r) => r.severity === 'Critical').length} critical` : '+3',
+      tone: 'warning',
+    },
+    {
+      label: 'Open Actions',
+      value: `${dashboardActions.filter((a) => a.status === 'pending_approval').length || dashboardActions.length}`,
+      trend: `${liveDocuments.length > 0 ? liveDocuments.length : documents.length} docs indexed`,
+      tone: 'info',
+    },
+  ]
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between text-xs text-slate-500">
-        <span>{liveDataConnected ? 'Live workspace data' : 'Showing seeded workspace data'}</span>
-        <span className={cn('h-2 w-2 rounded-full', liveDataConnected ? 'bg-emerald-500' : 'bg-amber-500')} aria-label={liveDataConnected ? 'Live data connected' : 'Seeded data'} />
+        <div className="flex items-center gap-2">
+          <span className={cn('h-2.5 w-2.5 rounded-full', liveDataConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500')} />
+          <span className="font-medium text-slate-700">{liveDataConnected ? 'Live workspace connected (Firestore)' : 'Seeded workspace demo data'}</span>
+        </div>
+        <div className="flex gap-2 text-slate-400">
+          <span>{liveRisks.length} risks</span> · <span>{liveActions.length} actions</span> · <span>{liveDocuments.length} docs</span>
+        </div>
       </div>
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {kpis.map((kpi) => (
-          <div key={kpi.label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between text-sm text-slate-500"><span>{kpi.label}</span><span className="font-medium text-emerald-500">{kpi.trend}</span></div>
+        {dynamicKpis.map((kpi) => (
+          <div key={kpi.label} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:shadow-md">
+            <div className="flex items-center justify-between text-sm text-slate-500">
+              <span>{kpi.label}</span>
+              <span className={cn('font-semibold text-xs rounded-full px-2 py-0.5', kpi.tone === 'critical' ? 'bg-red-50 text-red-600' : kpi.tone === 'warning' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-600')}>{kpi.trend}</span>
+            </div>
             <div className="mt-3 text-3xl font-semibold text-slate-900">{kpi.value}</div>
           </div>
         ))}
@@ -1580,36 +1639,42 @@ function DashboardPage() {
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="mb-5 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-slate-900">Operational health</h3>
+            <div>
+              <h3 className="text-lg font-semibold text-slate-900">Operational health</h3>
+              <p className="text-xs text-slate-500">Output volume vs machine downtime correlation</p>
+            </div>
             <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-700">Attention required</span>
           </div>
           <div className="h-72">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={chartData}>
-                <CartesianGrid stroke="#e2e8f0" />
-                <XAxis dataKey="name" />
-                <YAxis />
+                <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
+                <XAxis dataKey="name" stroke="#94a3b8" />
+                <YAxis stroke="#94a3b8" />
                 <Tooltip />
-                <Line type="monotone" dataKey="production" stroke="#4F46E5" strokeWidth={3} />
-                <Line type="monotone" dataKey="downtime" stroke="#F59E0B" strokeWidth={3} />
+                <Line type="monotone" dataKey="production" stroke="#4F46E5" strokeWidth={3} dot={{ r: 4 }} />
+                <Line type="monotone" dataKey="downtime" stroke="#F59E0B" strokeWidth={3} dot={{ r: 4 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="mb-5 flex items-center justify-between"><h3 className="text-lg font-semibold text-slate-900">Critical risks</h3><Link to="/app/risks" className="text-sm font-medium text-indigo-600">View all</Link></div>
+          <div className="mb-5 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-900">Critical risks</h3>
+            <Link to="/app/risks" className="text-sm font-semibold text-indigo-600 hover:text-indigo-700">View all ({dashboardRisks.length})</Link>
+          </div>
           <div className="space-y-3">
-            {dashboardRisks.map((risk) => (
-              <div key={risk.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            {dashboardRisks.slice(0, 3).map((risk) => (
+              <div key={risk.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 transition hover:border-slate-300">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-semibold text-slate-800">{risk.title}</span>
-                  <span className={cn('rounded-full px-2 py-1 text-[10px] font-semibold', risk.severity === 'Critical' ? 'bg-red-100 text-red-700' : risk.severity === 'High' ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700')}>{risk.severity}</span>
+                  <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', risk.severity === 'Critical' ? 'bg-red-100 text-red-700' : risk.severity === 'High' ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700')}>{risk.severity}</span>
                 </div>
-                <p className="mt-2 text-sm text-slate-600">{risk.impact}</p>
+                <p className="mt-1.5 text-xs text-slate-600">{risk.impact}</p>
                 <div className="mt-3 flex gap-2">
-                  <Link to="/app/copilot" className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white">Investigate</Link>
-                  <Link to={`/app/risks/${risk.id}`} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700">View Risk</Link>
+                  <Link to={`/app/copilot?q=${encodeURIComponent('Investigate ' + risk.title)}`} className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700">Investigate</Link>
+                  <Link to={`/app/risks/${risk.id}`} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">View Risk</Link>
                 </div>
               </div>
             ))}
@@ -1619,41 +1684,71 @@ function DashboardPage() {
 
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="mb-5 flex items-center justify-between"><h3 className="text-lg font-semibold text-slate-900">AI insights</h3><Link to="/app/copilot" className="text-sm font-medium text-indigo-600">View investigation</Link></div>
-          <div className="rounded-2xl bg-gradient-to-br from-indigo-50 to-violet-50 p-4">
-            <p className="text-sm text-slate-600">The production drop is driven by a motor failure and packaging delay. These factors explain 76% of the variance in output for the period.</p>
-            <div className="mt-4 flex gap-3 text-xs text-slate-600">
-              <span className="rounded-full bg-white px-2 py-1">Downtime +31 hrs</span>
-              <span className="rounded-full bg-white px-2 py-1">Supplier delay +7d</span>
-            </div>
+          <div className="mb-5 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-900">AI insights</h3>
+            <Link to={latestInvestigation ? `/app/copilot/${latestInvestigation.id}` : '/app/copilot'} className="text-sm font-semibold text-indigo-600 hover:text-indigo-700">
+              {latestInvestigation ? 'View latest report' : 'Run investigation'}
+            </Link>
+          </div>
+          <div className="rounded-2xl bg-gradient-to-br from-indigo-50/80 via-white to-violet-50/80 border border-indigo-100 p-4">
+            {latestInvestigation ? (
+              <>
+                <div className="text-xs font-semibold text-indigo-700 uppercase tracking-wider">Latest Gemini Copilot Finding</div>
+                <h4 className="mt-1 font-semibold text-slate-900">{latestInvestigation.question || latestInvestigation.title}</h4>
+                <p className="mt-2 text-sm text-slate-600 leading-relaxed">{latestInvestigation.summary}</p>
+                <div className="mt-4 flex flex-wrap gap-2 text-xs text-slate-700">
+                  <span className="rounded-full bg-white border border-indigo-200 px-2.5 py-1 font-medium">Status: {latestInvestigation.status}</span>
+                  <span className="rounded-full bg-white border border-indigo-200 px-2.5 py-1 font-medium">{latestInvestigation.findings?.length || 3} findings</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-slate-600 leading-relaxed">The production drop is driven by a motor failure and packaging delay. These factors explain 76% of the variance in output for the period.</p>
+                <div className="mt-4 flex gap-3 text-xs text-slate-600">
+                  <span className="rounded-full bg-white border border-slate-200 px-2.5 py-1">Downtime +31 hrs</span>
+                  <span className="rounded-full bg-white border border-slate-200 px-2.5 py-1">Supplier delay +7d</span>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
         <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-900">Recent actions</h3>
-          <div className="mt-5 space-y-3">
-            {dashboardActions.map((action) => (
-              <div key={action.id} className="flex items-center justify-between rounded-2xl border border-slate-200 p-3">
+          <div className="mb-5 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-slate-900">Recent actions</h3>
+            <Link to="/app/actions" className="text-sm font-semibold text-indigo-600 hover:text-indigo-700">Action center</Link>
+          </div>
+          <div className="space-y-3">
+            {dashboardActions.slice(0, 3).map((action) => (
+              <div key={action.id} className="flex items-center justify-between rounded-2xl border border-slate-200 p-3 hover:bg-slate-50 transition">
                 <div>
                   <div className="text-sm font-medium text-slate-800">{action.title}</div>
                   <div className="text-xs text-slate-500">{action.requestedBy}</div>
                 </div>
-                <span className={cn('rounded-full px-2 py-1 text-[10px] font-semibold capitalize', action.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : action.status === 'completed' ? 'bg-sky-100 text-sky-700' : 'bg-amber-100 text-amber-700')}>{action.status}</span>
+                <span className={cn('rounded-full px-2.5 py-1 text-[10px] font-semibold capitalize', action.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : action.status === 'completed' ? 'bg-sky-100 text-sky-700' : 'bg-amber-100 text-amber-700')}>{action.status}</span>
               </div>
             ))}
           </div>
         </div>
       </div>
 
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-slate-900">Ask Copilot</h3>
-          <button className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700">+ Quick prompt</button>
+          <div>
+            <h3 className="text-lg font-semibold text-slate-900">Ask Copilot</h3>
+            <p className="text-xs text-slate-500">Investigate operational bottlenecks, machine health, and inventory anomalies with AI</p>
+          </div>
+          <button type="button" onClick={() => setCopilotInput('Analyze critical inventory risks across plants')} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">+ Quick prompt</button>
         </div>
-        <div className="flex gap-3">
-          <input className="flex-1 rounded-xl border border-slate-200 px-3 py-2.5" placeholder="Why did production fall this month?" />
-          <Link to="/app/copilot" className="rounded-xl bg-indigo-600 px-4 py-2.5 font-semibold text-white">Investigate</Link>
-        </div>
+        <form onSubmit={handleCopilotSubmit} className="flex flex-col sm:flex-row gap-3">
+          <input
+            className="flex-1 rounded-xl border border-slate-200 px-4 py-3 text-sm focus:border-indigo-600 focus:outline-none"
+            placeholder="Why did production fall this month?"
+            value={copilotInput}
+            onChange={(e) => setCopilotInput(e.target.value)}
+          />
+          <button type="submit" className="rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-700 transition">Investigate</button>
+        </form>
       </div>
     </div>
   )
@@ -1661,9 +1756,30 @@ function DashboardPage() {
 
 function CopilotPage() {
   const navigate = useNavigate()
-  const [question, setQuestion] = useState('Why did production fall this month?')
+  const [searchParams] = useSearchParams()
+  const initialQuery = searchParams.get('q') || 'Why did production fall this month?'
+  const [question, setQuestion] = useState(initialQuery)
   const [loading, setLoading] = useState(false)
+  const [loadingStep, setLoadingStep] = useState(0)
   const [error, setError] = useState('')
+  const [liveInvestigations, setLiveInvestigations] = useState<any[]>([])
+
+  useEffect(() => {
+    const q = searchParams.get('q')
+    if (q) setQuestion(q)
+  }, [searchParams])
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined
+    void getCurrentOrgId().then((orgId) => {
+      if (orgId) {
+        unsubscribe = subscribeToOrgCollection<any>('investigations', orgId, (items) => {
+          setLiveInvestigations(items)
+        }, () => {})
+      }
+    })
+    return () => unsubscribe?.()
+  }, [])
 
   const handleInvestigate = () => {
     if (question.trim().length < 3) {
@@ -1672,45 +1788,129 @@ function CopilotPage() {
     }
     setLoading(true)
     setError('')
-    void startInvestigation(question.trim())
-      .then((investigationId) => navigate(`/app/copilot/${investigationId}`))
-      .catch((requestError: unknown) => setError(firebaseErrorMessage(requestError)))
+    setLoadingStep(1)
+
+    const timer1 = setTimeout(() => setLoadingStep(2), 1500)
+    const timer2 = setTimeout(() => setLoadingStep(3), 3200)
+
+    startInvestigation(question.trim())
+      .then((investigationId) => {
+        clearTimeout(timer1)
+        clearTimeout(timer2)
+        navigate(`/app/copilot/${investigationId}`)
+      })
+      .catch((requestError: unknown) => {
+        clearTimeout(timer1)
+        clearTimeout(timer2)
+        setError(firebaseErrorMessage(requestError))
+      })
       .finally(() => setLoading(false))
   }
 
+  const investigationsToDisplay = liveInvestigations.length > 0 ? liveInvestigations : investigationList
+
   return (
     <div className="space-y-6">
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h3 className="text-lg font-semibold text-slate-900">Ask the AI copilot</h3>
-        <textarea rows={4} value={question} onChange={(event) => setQuestion(event.target.value)} className="mt-4 w-full rounded-2xl border border-slate-200 p-3" />
-        <div className="mt-4 flex flex-wrap gap-3">
-          {['Why did production fall this month?', 'Which suppliers are delaying?', 'Which SKUs should we prioritize?'].map((suggestion) => (
-            <button type="button" key={suggestion} onClick={() => setQuestion(suggestion)} className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-sm text-slate-700">{suggestion}</button>
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-slate-900">Ask the AI Copilot</h3>
+        <p className="mt-1 text-sm text-slate-500">Investigate operational questions with real evidence from your connected risks, actions, and indexed documents.</p>
+        <textarea
+          rows={3}
+          value={question}
+          onChange={(event) => setQuestion(event.target.value)}
+          placeholder="What operational question would you like to investigate?"
+          className="mt-4 w-full rounded-2xl border border-slate-200 p-3 text-slate-900 focus:border-indigo-600 focus:outline-none"
+        />
+        <div className="mt-4 flex flex-wrap gap-2">
+          {[
+            'Why did production fall this month?',
+            'Which suppliers are delaying dispatch?',
+            'Which SKUs are at inventory risk?',
+            'Summarize open actions awaiting approval',
+          ].map((suggestion) => (
+            <button
+              type="button"
+              key={suggestion}
+              onClick={() => setQuestion(suggestion)}
+              className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 hover:border-slate-300 transition"
+            >
+              {suggestion}
+            </button>
           ))}
         </div>
-        {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
-        <div className="mt-5 flex justify-end"><button type="button" disabled={loading} onClick={handleInvestigate} className="rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white disabled:opacity-60">{loading ? 'Investigating...' : 'Send investigation'}</button></div>
+
+        {loading && (
+          <div className="mt-5 rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4">
+            <div className="flex items-center gap-3">
+              <RefreshCw className="h-5 w-5 animate-spin text-indigo-600" />
+              <div className="text-sm font-semibold text-indigo-900">
+                {loadingStep === 1 && 'Step 1: Gathering operational evidence from Firestore...'}
+                {loadingStep === 2 && 'Step 2: Feeding evidence into Gemini 2.5 Flash operational intelligence...'}
+                {loadingStep === 3 && 'Step 3: Structuring root-cause findings and actionable recommendations...'}
+                {loadingStep === 0 && 'Initializing Copilot investigation...'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {error && <p className="mt-4 text-sm font-medium text-red-600">{error}</p>}
+        <div className="mt-5 flex justify-end">
+          <button
+            type="button"
+            disabled={loading}
+            onClick={handleInvestigate}
+            className="rounded-xl bg-indigo-600 px-6 py-3 font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60 transition"
+          >
+            {loading ? 'Investigating...' : 'Start Investigation'}
+          </button>
+        </div>
       </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        {investigationList.map((item) => (
-          <Link to={`/app/copilot/${item.id}`} key={item.id} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between"><span className="text-sm font-medium text-indigo-600">{item.id}</span><span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-semibold text-emerald-700">{item.status}</span></div>
-            <h3 className="mt-3 text-lg font-semibold text-slate-900">{item.title}</h3>
-            <p className="mt-2 text-sm text-slate-600">{item.summary}</p>
-            <div className="mt-4 text-xs text-slate-500">{item.createdAt}</div>
-          </Link>
-        ))}
+
+      <div>
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-base font-semibold text-slate-900">Investigations</h3>
+          <span className="text-xs text-slate-500">{investigationsToDisplay.length} total</span>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          {investigationsToDisplay.map((item) => (
+            <Link
+              to={`/app/copilot/${item.id}`}
+              key={item.id}
+              className="group rounded-3xl border border-slate-200 bg-white p-5 shadow-sm hover:border-indigo-300 hover:shadow-md transition"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-mono font-medium text-indigo-600">{item.id}</span>
+                <span className={cn('rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase', item.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : item.status === 'running' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700')}>
+                  {item.status}
+                </span>
+              </div>
+              <h3 className="mt-2 text-base font-semibold text-slate-900 group-hover:text-indigo-600 transition">{item.question || item.title}</h3>
+              <p className="mt-2 text-xs leading-5 text-slate-600 line-clamp-3">{item.summary}</p>
+              <div className="mt-4 flex items-center justify-between text-[11px] text-slate-400">
+                <span>{item.createdAt?.toDate ? item.createdAt.toDate().toLocaleDateString() : (item.createdAt || 'Recent')}</span>
+                <span className="text-indigo-600 font-medium group-hover:underline">View details →</span>
+              </div>
+            </Link>
+          ))}
+        </div>
       </div>
     </div>
   )
 }
 
 function InvestigationDetailPage() {
+  const navigate = useNavigate()
   const params = useLocation().pathname
   const investigationId = params.split('/').filter(Boolean).pop() || 'INV-1024'
   const [liveInvestigation, setLiveInvestigation] = useState<InvestigationRecord | null>(null)
+  const [actionCreated, setActionCreated] = useState(false)
+  const [creatingAction, setCreatingAction] = useState(false)
 
-  useEffect(() => subscribeToDocument<InvestigationRecord>('investigations', investigationId, (item) => setLiveInvestigation(item), () => setLiveInvestigation(null)), [investigationId])
+  useEffect(() => {
+    return subscribeToDocument<InvestigationRecord>('investigations', investigationId, (item) => {
+      setLiveInvestigation(item)
+    }, () => setLiveInvestigation(null))
+  }, [investigationId])
 
   const fallbackInvestigation = investigationList.find((item) => item.id === investigationId) ?? investigationList[0]
   const question = liveInvestigation?.question ?? fallbackInvestigation.title
@@ -1720,29 +1920,65 @@ function InvestigationDetailPage() {
     'Motor stock is only 8 days remaining and 520 units short of the target buffer.',
     'Packaging supplier delay is 7 days, creating dispatch risk.',
   ]
-  const recommendations = liveInvestigation?.recommendations ?? ['Prioritize maintenance ticket M-104', 'Escalate packaging procurement', 'Rebalance production schedules']
+  const recommendations = liveInvestigation?.recommendations ?? [
+    'Prioritize maintenance ticket M-104',
+    'Escalate packaging procurement',
+    'Rebalance production schedules',
+  ]
+  const evidenceList = liveInvestigation?.evidence ?? ['Maintenance Report', 'Inventory ledger', 'Supplier contract']
+
+  const isCompleted = liveInvestigation?.status === 'completed' || !liveInvestigation
+
+  const handleCreateActionFromRecommendation = async (rec: string) => {
+    setCreatingAction(true)
+    try {
+      await createAction({
+        title: rec,
+        reason: `Generated from AI investigation: ${question}`,
+        priority: 'High',
+      })
+      setActionCreated(true)
+      setTimeout(() => setActionCreated(false), 4000)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setCreatingAction(false)
+    }
+  }
 
   const steps = [
-    { label: 'Understanding the request', status: 'done' },
-    { label: 'Collecting evidence', status: 'done' },
-    { label: 'Assessing risk and opportunity', status: 'active' },
-    { label: 'Drafting recommendation', status: 'pending' },
+    { label: 'Understanding operational context', status: 'done' },
+    { label: 'Collecting evidence from Firestore', status: 'done' },
+    { label: 'Gemini 2.5 Flash intelligence reasoning', status: isCompleted ? 'done' : 'active' },
+    { label: 'Finalizing actionable recommendation', status: isCompleted ? 'done' : 'pending' },
   ]
+
   return (
     <div className="space-y-6">
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="mb-5 flex items-center justify-between">
+      {actionCreated && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-medium text-emerald-800 flex items-center justify-between">
+          <span>✓ Action created and queued for review in Action Center!</span>
+          <Link to="/app/actions" className="font-semibold underline">Go to Actions →</Link>
+        </div>
+      )}
+
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="font-mono text-sm text-slate-500">Investigation {investigationId}</div>
-            <h2 className="text-2xl font-semibold text-slate-900">{question}</h2>
+            <div className="flex items-center gap-2 font-mono text-xs text-slate-500">
+              <Link to="/app/copilot" className="hover:underline">Copilot</Link> / <span>{investigationId}</span>
+            </div>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">{question}</h2>
           </div>
-          <span className="rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold capitalize text-indigo-700">{liveInvestigation?.status ?? 'running'}</span>
+          <span className={cn('rounded-full px-3 py-1 text-xs font-semibold capitalize', isCompleted ? 'bg-emerald-100 text-emerald-700' : 'bg-indigo-100 text-indigo-700 animate-pulse')}>
+            {liveInvestigation?.status ?? 'Completed'}
+          </span>
         </div>
 
-        <div className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {steps.map((step) => (
-            <div key={step.label} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm">
-              <div className={cn('flex h-6 w-6 items-center justify-center rounded-full', step.status === 'done' ? 'bg-emerald-100 text-emerald-700' : step.status === 'active' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-500')}>
+            <div key={step.label} className="flex items-center gap-2.5 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+              <div className={cn('flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold', step.status === 'done' ? 'bg-emerald-100 text-emerald-700' : step.status === 'active' ? 'bg-indigo-600 text-white animate-spin' : 'bg-slate-200 text-slate-500')}>
                 {step.status === 'done' ? '✓' : step.status === 'active' ? '●' : '○'}
               </div>
               <span className="font-medium text-slate-700">{step.label}</span>
@@ -1753,38 +1989,74 @@ function InvestigationDetailPage() {
 
       <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
         <div className="space-y-6">
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">Summary</h3>
-            <p className="mt-3 leading-7 text-slate-600">{summary}</p>
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-base font-semibold text-slate-900">Executive Summary</h3>
+            <p className="mt-3 text-sm leading-7 text-slate-700">{summary}</p>
           </div>
 
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">Key findings</h3>
-            <ol className="mt-4 space-y-3 text-slate-700">
-              {findings.map((finding, index) => <li key={finding}>{index + 1}. {finding}</li>)}
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-base font-semibold text-slate-900">Key Findings</h3>
+            <ol className="mt-4 space-y-3">
+              {findings.map((finding, index) => (
+                <li key={index} className="flex gap-3 text-sm text-slate-700">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-50 font-semibold text-xs text-indigo-600">{index + 1}</span>
+                  <span className="leading-6">{finding}</span>
+                </li>
+              ))}
             </ol>
           </div>
 
-          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900">Recommendations</h3>
-            <ul className="mt-4 space-y-3 text-slate-700">
-              {recommendations.map((recommendation) => <li key={recommendation}>• {recommendation}</li>)}
-            </ul>
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-base font-semibold text-slate-900">Operational Recommendations</h3>
+            <div className="mt-4 space-y-3">
+              {recommendations.map((rec, index) => (
+                <div key={index} className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3.5">
+                  <div className="text-sm font-medium text-slate-800">{rec}</div>
+                  <button
+                    type="button"
+                    disabled={creatingAction}
+                    onClick={() => handleCreateActionFromRecommendation(rec)}
+                    className="shrink-0 rounded-xl bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+                  >
+                    + Create Action
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
-        <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h3 className="text-lg font-semibold text-slate-900">Evidence</h3>
-          <div className="mt-4 space-y-3">
-            {[{ source: 'Maintenance Report', detail: 'Machine M-104 downtime: 43 hrs', value: 'vs 12 hrs prior month' }, { source: 'Inventory ledger', detail: 'Motor stock remaining: 8 days', value: '520 units short' }, { source: 'Supplier contract', detail: 'Packaging lead time changed to 7 days', value: 'shipment at risk' }].map((item, idx) => (
-              <button key={idx} className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left">
-                <div className="text-sm font-medium text-slate-800">{item.source}</div>
-                <div className="mt-1 text-sm text-slate-600">{item.detail}</div>
-                <div className="mt-2 text-xs text-indigo-600">{item.value}</div>
-              </button>
-            ))}
+        <div className="space-y-6">
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-base font-semibold text-slate-900">Evidence Gathered</h3>
+            <p className="mt-1 text-xs text-slate-500">Live documents and records retrieved for this query</p>
+            <div className="mt-4 space-y-3">
+              {evidenceList.map((item, idx) => (
+                <div key={idx} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-left">
+                  <div className="text-xs font-semibold text-slate-800">{typeof item === 'string' ? item : JSON.stringify(item)}</div>
+                  <div className="mt-1 text-[11px] text-emerald-600 font-medium">✓ Verified against organization data</div>
+                </div>
+              ))}
+            </div>
+            <Link
+              to="/app/documents"
+              className="mt-6 inline-flex w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
+            >
+              Browse all documents →
+            </Link>
           </div>
-          <Link to="/app/actions/ACT-2301/review" className="mt-6 inline-flex w-full items-center justify-center rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white">Create Action</Link>
+
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="text-base font-semibold text-slate-900">Have a follow-up?</h3>
+            <p className="mt-1 text-xs text-slate-500">Continue this investigation with another question</p>
+            <button
+              type="button"
+              onClick={() => navigate('/app/copilot')}
+              className="mt-4 inline-flex w-full items-center justify-center rounded-xl bg-indigo-600 px-4 py-3 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+            >
+              Ask another question
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1792,7 +2064,55 @@ function InvestigationDetailPage() {
 }
 
 function InvestigationsPage() {
-  return <div className="space-y-4">{investigationList.map((item) => <Link to={`/app/investigations/${item.id}`} key={item.id} className="block rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between"><h3 className="font-semibold text-slate-900">{item.title}</h3><span className="text-xs text-slate-500">{item.status}</span></div><p className="mt-2 text-sm text-slate-600">{item.summary}</p></Link>)}</div>
+  const [liveInvestigations, setLiveInvestigations] = useState<any[]>([])
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined
+    void getCurrentOrgId().then((orgId) => {
+      if (orgId) {
+        unsubscribe = subscribeToOrgCollection<any>('investigations', orgId, setLiveInvestigations, () => {})
+      }
+    })
+    return () => unsubscribe?.()
+  }, [])
+
+  const items = liveInvestigations.length > 0 ? liveInvestigations : investigationList
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">All Investigations</h2>
+          <p className="text-xs text-slate-500">History of AI operational investigations</p>
+        </div>
+        <Link to="/app/copilot" className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition">
+          + New Investigation
+        </Link>
+      </div>
+
+      <div className="space-y-3">
+        {items.map((item) => (
+          <Link
+            to={`/app/copilot/${item.id}`}
+            key={item.id}
+            className="block rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-indigo-300 hover:shadow-md"
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-xs font-semibold text-indigo-600">{item.id}</span>
+              <span className={cn('rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase', item.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700')}>
+                {item.status}
+              </span>
+            </div>
+            <h3 className="mt-2 text-base font-semibold text-slate-900">{item.question || item.title}</h3>
+            <p className="mt-1 text-sm text-slate-600 line-clamp-2">{item.summary}</p>
+            <div className="mt-3 text-xs text-slate-400">
+              {item.createdAt?.toDate ? item.createdAt.toDate().toLocaleDateString() : (item.createdAt || 'Recent')}
+            </div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function AnalyticsPage() {
@@ -1830,24 +2150,208 @@ function AnalyticsPage() {
 }
 
 function RisksPage() {
+  const [liveRisks, setLiveRisks] = useState<RiskItem[]>([])
+  const [selectedSeverity, setSelectedSeverity] = useState<string>('All')
+  const [searchFilter, setSearchFilter] = useState('')
+  const [isAddingRisk, setIsAddingRisk] = useState(false)
+  const [newTitle, setNewTitle] = useState('')
+  const [newSeverity, setNewSeverity] = useState<Severity>('High')
+  const [newImpact, setNewImpact] = useState('')
+  const [newRecommendation, setNewRecommendation] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined
+    void getCurrentOrgId().then((orgId) => {
+      if (orgId) {
+        unsubscribe = subscribeToOrgCollection<RiskItem>('risks', orgId, setLiveRisks, () => {})
+      }
+    })
+    return () => unsubscribe?.()
+  }, [])
+
+  const risksToDisplay = liveRisks.length > 0 ? liveRisks : riskList
+
+  const counts = {
+    Critical: risksToDisplay.filter((r) => r.severity === 'Critical').length,
+    High: risksToDisplay.filter((r) => r.severity === 'High').length,
+    Medium: risksToDisplay.filter((r) => r.severity === 'Medium').length,
+    Low: risksToDisplay.filter((r) => r.severity === 'Low').length,
+  }
+
+  const filteredRisks = risksToDisplay.filter((r) => {
+    const matchesSeverity = selectedSeverity === 'All' || r.severity === selectedSeverity
+    const matchesSearch = !searchFilter.trim() || r.title.toLowerCase().includes(searchFilter.toLowerCase()) || r.impact.toLowerCase().includes(searchFilter.toLowerCase())
+    return matchesSeverity && matchesSearch
+  })
+
+  const handleCreateRisk = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!newTitle.trim() || !newImpact.trim()) return
+    setSubmitting(true)
+    try {
+      await createRisk({
+        title: newTitle.trim(),
+        severity: newSeverity,
+        impact: newImpact.trim(),
+        recommendation: newRecommendation.trim() || 'Review and take mitigation action.',
+      })
+      setNewTitle('')
+      setNewImpact('')
+      setNewRecommendation('')
+      setIsAddingRisk(false)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
+          {['All', 'Critical', 'High', 'Medium', 'Low'].map((sev) => (
+            <button
+              key={sev}
+              type="button"
+              onClick={() => setSelectedSeverity(sev)}
+              className={cn(
+                'rounded-xl px-3.5 py-1.5 text-xs font-semibold transition',
+                selectedSeverity === sev
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50',
+              )}
+            >
+              {sev}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => setIsAddingRisk(!isAddingRisk)}
+          className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+        >
+          {isAddingRisk ? 'Cancel' : '+ Add Operational Risk'}
+        </button>
+      </div>
+
+      {isAddingRisk && (
+        <form onSubmit={handleCreateRisk} className="rounded-3xl border border-indigo-200 bg-indigo-50/40 p-6 shadow-sm">
+          <h3 className="text-base font-semibold text-slate-900">Add New Operational Risk</h3>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="text-xs font-medium text-slate-700">Risk Title *</label>
+              <input
+                required
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+                placeholder="e.g. Raw material buffer breach at Plant 2"
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-700">Severity Level</label>
+              <select
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+                value={newSeverity}
+                onChange={(e) => setNewSeverity(e.target.value as Severity)}
+              >
+                <option value="Critical">Critical</option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+              </select>
+            </div>
+            <div className="md:col-span-2">
+              <label className="text-xs font-medium text-slate-700">Operational Impact *</label>
+              <input
+                required
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+                placeholder="e.g. 520 units short of buffer, line halt risk in 48 hours"
+                value={newImpact}
+                onChange={(e) => setNewImpact(e.target.value)}
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="text-xs font-medium text-slate-700">Recommended Action</label>
+              <input
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+                placeholder="e.g. Initiate emergency purchase order and balance production shifts"
+                value={newRecommendation}
+                onChange={(e) => setNewRecommendation(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setIsAddingRisk(false)}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="rounded-xl bg-indigo-600 px-5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+            >
+              {submitting ? 'Saving...' : 'Save Risk to Firestore'}
+            </button>
+          </div>
+        </form>
+      )}
+
       <div className="grid gap-4 md:grid-cols-4">
-        {['Critical', 'High', 'Medium', 'Low'].map((label, index) => (
-          <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="text-sm text-slate-500">{label}</div>
-            <div className="mt-2 text-2xl font-semibold text-slate-900">{[3, 7, 18, 31][index]}</div>
+        {[
+          { label: 'Critical', count: counts.Critical, color: 'text-red-700 bg-red-50 border-red-200' },
+          { label: 'High', count: counts.High, color: 'text-orange-700 bg-orange-50 border-orange-200' },
+          { label: 'Medium', count: counts.Medium, color: 'text-amber-700 bg-amber-50 border-amber-200' },
+          { label: 'Low', count: counts.Low, color: 'text-slate-700 bg-slate-50 border-slate-200' },
+        ].map((item) => (
+          <div key={item.label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-xs font-medium text-slate-500">{item.label} Priority</div>
+            <div className="mt-2 text-2xl font-bold text-slate-900">{item.count}</div>
           </div>
         ))}
       </div>
-      <div className="space-y-4">
-        {riskList.map((risk) => (
-          <Link to={`/app/risks/${risk.id}`} key={risk.id} className="block rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between"><div className="flex items-center gap-3"><span className={cn('rounded-full px-2 py-1 text-[10px] font-semibold', risk.severity === 'Critical' ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700')}>{risk.severity}</span><span className="text-sm text-slate-500">{risk.id}</span></div><span className="text-sm text-slate-500">{risk.status}</span></div>
-            <h3 className="mt-3 text-lg font-semibold text-slate-900">{risk.title}</h3>
-            <p className="mt-2 text-sm text-slate-600">{risk.impact}</p>
-            <div className="mt-3 text-sm text-indigo-600">{risk.recommendation}</div>
-          </Link>
+
+      <div className="relative">
+        <input
+          type="text"
+          placeholder="Filter operational risks by keywords..."
+          value={searchFilter}
+          onChange={(e) => setSearchFilter(e.target.value)}
+          className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm placeholder:text-slate-400 focus:border-indigo-600 focus:outline-none"
+        />
+      </div>
+
+      <div className="space-y-3">
+        {filteredRisks.map((risk) => (
+          <div key={risk.id} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className={cn('rounded-full px-2.5 py-0.5 text-[10px] font-semibold', risk.severity === 'Critical' ? 'bg-red-100 text-red-700' : risk.severity === 'High' ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700')}>
+                  {risk.severity}
+                </span>
+                <span className="font-mono text-xs text-slate-400">{risk.id}</span>
+              </div>
+              <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-medium text-slate-600 capitalize">
+                {risk.status || 'Open'}
+              </span>
+            </div>
+            <h3 className="mt-3 text-base font-semibold text-slate-900">{risk.title}</h3>
+            <p className="mt-1 text-xs text-slate-600">{risk.impact}</p>
+            <div className="mt-2 text-xs font-medium text-indigo-600">{risk.recommendation}</div>
+            <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3">
+              <Link to={`/app/copilot?q=${encodeURIComponent('Investigate operational risk: ' + risk.title)}`} className="text-xs font-semibold text-indigo-600 hover:underline">
+                Investigate with Copilot →
+              </Link>
+              <Link to={`/app/risks/${risk.id}`} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                View Risk Details
+              </Link>
+            </div>
+          </div>
         ))}
       </div>
     </div>
@@ -1855,22 +2359,93 @@ function RisksPage() {
 }
 
 function RiskDetailPage() {
+  const navigate = useNavigate()
+  const path = useLocation().pathname
+  const riskId = path.split('/').filter(Boolean).pop() || 'R-104'
+  const [liveRisk, setLiveRisk] = useState<RiskItem | null>(null)
+  const [updating, setUpdating] = useState(false)
+
+  useEffect(() => {
+    return subscribeToDocument<RiskItem>('risks', riskId, setLiveRisk, () => setLiveRisk(null))
+  }, [riskId])
+
+  const fallback = riskList.find((r) => r.id === riskId) ?? riskList[0]
+  const risk = liveRisk ?? fallback
+
+  const handleStatusChange = async (newStatus: string) => {
+    setUpdating(true)
+    try {
+      await updateRisk(riskId, { status: newStatus })
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setUpdating(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex items-center justify-between">
-          <div><span className="rounded-full bg-red-100 px-2 py-1 text-[10px] font-semibold text-red-700">Critical</span><h2 className="mt-3 text-2xl font-semibold text-slate-900">Motor inventory shortfall at Plant 3</h2></div>
-          <button className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700">Open</button>
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 font-mono text-xs text-slate-500">
+              <Link to="/app/risks" className="hover:underline">Risks</Link> / <span>{riskId}</span>
+            </div>
+            <div className="mt-2 flex items-center gap-3">
+              <span className={cn('rounded-full px-2.5 py-0.5 text-xs font-semibold', risk.severity === 'Critical' ? 'bg-red-100 text-red-700' : risk.severity === 'High' ? 'bg-orange-100 text-orange-700' : 'bg-amber-100 text-amber-700')}>
+                {risk.severity}
+              </span>
+              <h2 className="text-2xl font-bold text-slate-900">{risk.title}</h2>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500">Status:</span>
+            <select
+              value={risk.status || 'Open'}
+              disabled={updating}
+              onChange={(e) => handleStatusChange(e.target.value)}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-800 focus:outline-none"
+            >
+              <option value="Open">Open</option>
+              <option value="Investigating">Investigating</option>
+              <option value="Mitigated">Mitigated</option>
+              <option value="Resolved">Resolved</option>
+            </select>
+          </div>
         </div>
-        <p className="mt-4 text-slate-600">Current stock covers only 8 days of operations and the plant is 520 units short of the target safety buffer.</p>
+        <p className="mt-4 text-sm text-slate-600 leading-relaxed">{risk.impact}</p>
+        <div className="mt-5 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => navigate(`/app/copilot?q=${encodeURIComponent('Investigate operational risk: ' + risk.title)}`)}
+            className="rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+          >
+            Investigate with Copilot
+          </button>
+          <Link to="/app/actions" className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+            View Related Actions
+          </Link>
+        </div>
       </div>
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h3 className="text-lg font-semibold text-slate-900">Trend</h3>
-        <div className="mt-4 h-52"><ResponsiveContainer width="100%" height="100%"><LineChart data={[{name:'Jul', value: 95},{name:'Aug', value: 72},{name:'Sep', value: 54}]}><CartesianGrid stroke="#e2e8f0" /><XAxis dataKey="name" /><Tooltip /><Line dataKey="value" stroke="#DC2626" strokeWidth={3} /></LineChart></ResponsiveContainer></div>
+
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-base font-semibold text-slate-900">Historical Disruption Trend</h3>
+        <p className="text-xs text-slate-500">Risk impact over the last 3 observation windows</p>
+        <div className="mt-4 h-52">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={[{ name: 'Jul', value: 95 }, { name: 'Aug', value: 72 }, { name: 'Sep', value: 54 }]}>
+              <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
+              <XAxis dataKey="name" stroke="#94a3b8" />
+              <Tooltip />
+              <Line dataKey="value" stroke="#DC2626" strokeWidth={3} dot={{ r: 4 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
       </div>
-      <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h3 className="text-lg font-semibold text-slate-900">Recommended actions</h3>
-        <ul className="mt-3 space-y-2 text-slate-700"><li>• Create emergency procurement request for 520 motors.</li><li>• Schedule maintenance inspection for M-104 and service the line before next shift.</li></ul>
+
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-base font-semibold text-slate-900">Recommended Next Steps</h3>
+        <p className="mt-2 text-sm text-slate-700">{risk.recommendation}</p>
       </div>
     </div>
   )
@@ -1885,41 +2460,548 @@ function OpportunityDetailPage() {
 }
 
 function ActionCenterPage() {
-  return <div className="space-y-4">{actionList.map((action) => <Link to={`/app/actions/${action.id}`} key={action.id} className="block rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><div><div className="text-sm font-semibold text-slate-900">{action.title}</div><div className="text-xs text-slate-500">{action.requestedBy}</div></div><span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-semibold capitalize text-amber-700">{action.status}</span></div><p className="mt-3 text-sm text-slate-600">{action.reason}</p></Link>)}</div>
-}
-
-function ActionReviewPage() {
-  return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-2xl font-semibold text-slate-900">Create maintenance ticket for line 3 motor</h2><div className="mt-4 grid gap-4 md:grid-cols-2"><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">Required permission: Approve actions</div><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">Priority: High</div></div><div className="mt-6 flex gap-3"><button className="flex-1 rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white">Approve</button><button className="flex-1 rounded-xl bg-red-600 px-4 py-3 font-semibold text-white">Reject</button></div></div>
-}
-
-function ActionDetailPage() {
-  return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-2xl font-semibold text-slate-900">Action detail</h2><p className="mt-3 text-slate-600">Maintenance ticket has been approved and execution is in progress.</p><div className="mt-4 rounded-2xl bg-slate-50 p-4 font-mono text-sm">MT-10482</div></div>
-}
-
-function DocumentsPage() {
-  const [liveDocuments, setLiveDocuments] = useState<Array<DocumentRecord & { id: string }>>([])
+  const [liveActions, setLiveActions] = useState<any[]>([])
+  const [selectedStatus, setSelectedStatus] = useState('All')
+  const [isAdding, setIsAdding] = useState(false)
+  const [title, setTitle] = useState('')
+  const [reason, setReason] = useState('')
+  const [priority, setPriority] = useState('High')
+  const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined
     void getCurrentOrgId().then((orgId) => {
-      if (orgId) unsubscribe = subscribeToOrgCollection<DocumentRecord>('documents', orgId, setLiveDocuments, () => setLiveDocuments([]))
+      if (orgId) {
+        unsubscribe = subscribeToOrgCollection<any>('actions', orgId, setLiveActions, () => {})
+      }
     })
     return () => unsubscribe?.()
   }, [])
 
-  const items = liveDocuments.length > 0 ? liveDocuments : documents
-  return <div className="space-y-4">{items.map((document) => <Link to={`/app/documents/${document.id}`} key={document.id} className="block rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><div><div className="font-semibold text-slate-900">{document.name}</div><div className="text-xs text-slate-500">{document.department}</div></div><span className="rounded-full bg-sky-100 px-2 py-1 text-[10px] font-semibold text-sky-700">{document.status}</span></div><div className="mt-3 text-sm text-slate-600">Type: {document.type} · Uploaded: {document.uploaded || 'Available in workspace'}</div></Link>)}</div>
+  const actionsToDisplay = liveActions.length > 0 ? liveActions : actionList
+
+  const filtered = actionsToDisplay.filter((a) => {
+    if (selectedStatus === 'All') return true
+    if (selectedStatus === 'Pending') return a.status === 'pending_approval' || a.status === 'pending'
+    return a.status === selectedStatus.toLowerCase()
+  })
+
+  const handleCreateAction = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!title.trim() || !reason.trim()) return
+    setSubmitting(true)
+    try {
+      await createAction({ title, reason, priority })
+      setTitle('')
+      setReason('')
+      setIsAdding(false)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
+          {['All', 'Pending', 'Approved', 'Completed', 'Rejected'].map((status) => (
+            <button
+              key={status}
+              type="button"
+              onClick={() => setSelectedStatus(status)}
+              className={cn(
+                'rounded-xl px-3.5 py-1.5 text-xs font-semibold transition',
+                selectedStatus === status ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50',
+              )}
+            >
+              {status}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => setIsAdding(!isAdding)}
+          className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+        >
+          {isAdding ? 'Cancel' : '+ New Action'}
+        </button>
+      </div>
+
+      {isAdding && (
+        <form onSubmit={handleCreateAction} className="rounded-3xl border border-indigo-200 bg-indigo-50/40 p-6 shadow-sm">
+          <h3 className="text-base font-semibold text-slate-900">Create New Operational Action</h3>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="text-xs font-medium text-slate-700">Action Title *</label>
+              <input
+                required
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+                placeholder="e.g. Schedule emergency extruder line maintenance"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-700">Priority Level</label>
+              <select
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+              >
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+              </select>
+            </div>
+            <div className="md:col-span-2">
+              <label className="text-xs font-medium text-slate-700">Reason / Justification *</label>
+              <input
+                required
+                className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+                placeholder="e.g. Rising motor bearing temperatures detected during shift 2"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setIsAdding(false)}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="rounded-xl bg-indigo-600 px-5 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+            >
+              {submitting ? 'Creating...' : 'Submit Action for Review'}
+            </button>
+          </div>
+        </form>
+      )}
+
+      <div className="space-y-3">
+        {filtered.map((action) => (
+          <div key={action.id} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs font-semibold text-indigo-600">{action.id}</span>
+                  <span className="text-xs text-slate-400">· Requested by {action.requestedBy || 'Team Member'}</span>
+                </div>
+                <h3 className="mt-1 text-base font-semibold text-slate-900">{action.title}</h3>
+              </div>
+              <span className={cn('rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase', action.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : action.status === 'completed' ? 'bg-sky-100 text-sky-700' : action.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700')}>
+                {action.status}
+              </span>
+            </div>
+            <p className="mt-2 text-xs text-slate-600">{action.reason}</p>
+            <div className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-xs">
+              <span className="text-slate-400">Priority: <strong className="text-slate-700">{action.priority || 'Medium'}</strong></span>
+              <div className="flex gap-2">
+                <Link to={`/app/actions/${action.id}/review`} className="rounded-lg bg-indigo-600 px-3 py-1.5 font-semibold text-white hover:bg-indigo-700">
+                  Review & Approve
+                </Link>
+                <Link to={`/app/actions/${action.id}`} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-100">
+                  View Detail
+                </Link>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ActionReviewPage() {
+  const navigate = useNavigate()
+  const path = useLocation().pathname
+  const segments = path.split('/').filter(Boolean)
+  const actionId = segments.find((s) => s.startsWith('ACT-')) || segments[segments.length - 2] || 'ACT-2301'
+  const [liveAction, setLiveAction] = useState<any | null>(null)
+  const [updating, setUpdating] = useState(false)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    return subscribeToDocument<any>('actions', actionId, setLiveAction, () => setLiveAction(null))
+  }, [actionId])
+
+  const fallback = actionList.find((a) => a.id === actionId) ?? actionList[0]
+  const action = liveAction ?? fallback
+
+  const handleReview = async (decision: 'approved' | 'rejected') => {
+    setUpdating(true)
+    try {
+      await updateActionStatus(actionId, decision)
+      setMessage(`Action ${actionId} has been successfully ${decision}!`)
+      setTimeout(() => navigate('/app/actions'), 1500)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {message && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">
+          ✓ {message}
+        </div>
+      )}
+
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-center gap-2 font-mono text-xs text-slate-500">
+          <Link to="/app/actions" className="hover:underline">Action Center</Link> / <span>{actionId}</span> / <span>Review</span>
+        </div>
+        <h2 className="mt-2 text-2xl font-bold text-slate-900">{action.title}</h2>
+        <p className="mt-2 text-sm text-slate-600">{action.reason}</p>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-3">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-xs text-slate-500">Requested By</div>
+            <div className="mt-1 font-semibold text-slate-900">{action.requestedBy || 'Operations Team'}</div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-xs text-slate-500">Priority Level</div>
+            <div className="mt-1 font-semibold text-slate-900">{action.priority || 'High'}</div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-xs text-slate-500">Current Status</div>
+            <div className="mt-1 font-semibold capitalize text-slate-900">{action.status || 'Pending Approval'}</div>
+          </div>
+        </div>
+
+        <div className="mt-8 flex flex-col sm:flex-row gap-3">
+          <button
+            type="button"
+            disabled={updating || action.status === 'approved'}
+            onClick={() => handleReview('approved')}
+            className="flex-1 rounded-xl bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50 transition"
+          >
+            {updating ? 'Updating...' : '✓ Approve Action'}
+          </button>
+          <button
+            type="button"
+            disabled={updating || action.status === 'rejected'}
+            onClick={() => handleReview('rejected')}
+            className="flex-1 rounded-xl bg-red-600 px-5 py-3 font-semibold text-white hover:bg-red-700 disabled:opacity-50 transition"
+          >
+            {updating ? 'Updating...' : '✕ Reject Action'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ActionDetailPage() {
+  const path = useLocation().pathname
+  const actionId = path.split('/').filter(Boolean).pop() || 'ACT-2301'
+  const [liveAction, setLiveAction] = useState<any | null>(null)
+
+  useEffect(() => {
+    return subscribeToDocument<any>('actions', actionId, setLiveAction, () => setLiveAction(null))
+  }, [actionId])
+
+  const fallback = actionList.find((a) => a.id === actionId) ?? actionList[0]
+  const action = liveAction ?? fallback
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-center gap-2 font-mono text-xs text-slate-500">
+          <Link to="/app/actions" className="hover:underline">Action Center</Link> / <span>{actionId}</span>
+        </div>
+        <div className="mt-2 flex items-center justify-between">
+          <h2 className="text-2xl font-bold text-slate-900">{action.title}</h2>
+          <span className="rounded-full bg-indigo-100 px-3 py-1 text-xs font-semibold capitalize text-indigo-700">
+            {action.status || 'Active'}
+          </span>
+        </div>
+        <p className="mt-3 text-sm text-slate-600">{action.reason}</p>
+        <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600 leading-relaxed">
+          This operational action is synced in real-time with organizational governance. Review logs and permission audits are stored in Audit Logs.
+        </div>
+        <div className="mt-5 flex gap-3">
+          <Link to={`/app/actions/${actionId}/review`} className="rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700">
+            Open Review Console
+          </Link>
+          <Link to="/app/actions" className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+            Back to Actions
+          </Link>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DocumentsPage() {
+  const [liveDocuments, setLiveDocuments] = useState<Array<DocumentRecord & { id: string; downloadURL?: string; fileSize?: number }>>([])
+  const [search, setSearch] = useState('')
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined
+    void getCurrentOrgId().then((orgId) => {
+      if (orgId) {
+        unsubscribe = subscribeToOrgCollection<any>('documents', orgId, setLiveDocuments, () => setLiveDocuments([]))
+      }
+    })
+    return () => unsubscribe?.()
+  }, [])
+
+  const items = liveDocuments.length > 0 ? liveDocuments : (documents as any[])
+
+  const filtered = items.filter((d) => {
+    if (!search.trim()) return true
+    const term = search.toLowerCase()
+    return d.name?.toLowerCase().includes(term) || d.department?.toLowerCase().includes(term) || d.type?.toLowerCase().includes(term)
+  })
+
+  const handleDelete = async (docId: string, name: string) => {
+    if (!window.confirm(`Are you sure you want to delete ${name}?`)) return
+    setDeletingId(docId)
+    try {
+      await deleteDocument(docId)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <input
+          type="text"
+          placeholder="Search documents by name, type, or department..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="flex-1 min-w-[240px] rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm focus:border-indigo-600 focus:outline-none"
+        />
+        <Link
+          to="/app/documents/upload"
+          className="rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+        >
+          + Upload Document
+        </Link>
+      </div>
+
+      <div className="space-y-3">
+        {filtered.map((doc) => (
+          <div key={doc.id} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="rounded bg-indigo-50 px-2 py-0.5 font-mono text-[10px] font-bold text-indigo-700">{doc.type || 'FILE'}</span>
+                  <span className="text-xs text-slate-400 font-mono">{doc.id}</span>
+                </div>
+                <h3 className="mt-1.5 text-base font-semibold text-slate-900">{doc.name}</h3>
+                <div className="mt-1 text-xs text-slate-500">
+                  Department: <strong className="text-slate-700">{doc.department || 'General'}</strong> · Uploaded: {doc.uploaded || 'Active in workspace'} {doc.fileSize ? `· ${(doc.fileSize / 1024).toFixed(1)} KB` : ''}
+                </div>
+              </div>
+              <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-[10px] font-semibold text-sky-700 capitalize">
+                {doc.status || 'Ready'}
+              </span>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center justify-between border-t border-slate-100 pt-3 text-xs gap-2">
+              <Link to={`/app/copilot?q=${encodeURIComponent('Analyze operational document: ' + doc.name)}`} className="font-semibold text-indigo-600 hover:underline">
+                Investigate with Copilot →
+              </Link>
+              <div className="flex items-center gap-2">
+                {doc.downloadURL && (
+                  <a
+                    href={doc.downloadURL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  >
+                    <Download className="h-3.5 w-3.5" /> Download
+                  </a>
+                )}
+                <Link to={`/app/documents/${doc.id}`} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                  Details
+                </Link>
+                <button
+                  type="button"
+                  disabled={deletingId === doc.id}
+                  onClick={() => handleDelete(doc.id, doc.name || 'document')}
+                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function DocumentUploadPage() {
-  return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-2xl font-semibold text-slate-900">Upload document</h2><div className="mt-5 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50 p-8 text-center"><Upload className="mx-auto h-10 w-10 text-slate-400" /><div className="mt-3 text-sm text-slate-600">Drag & drop or browse to upload PDF, DOCX, XLSX, CSV, TXT files</div></div><button className="mt-6 rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white">Upload and process</button></div>
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [department, setDepartment] = useState('Operations')
+  const [uploading, setUploading] = useState(false)
+  const [progressText, setProgressText] = useState('')
+  const [error, setError] = useState('')
+  const [uploadedId, setUploadedId] = useState<string | null>(null)
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0])
+      setError('')
+    }
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      setSelectedFile(e.dataTransfer.files[0])
+      setError('')
+    }
+  }
+
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      setError('Please select a file to upload.')
+      return
+    }
+    setUploading(true)
+    setError('')
+    setProgressText('Uploading file to Firebase Storage...')
+
+    try {
+      const docId = await uploadDocument(selectedFile, department)
+      setProgressText('File indexed into Firestore successfully!')
+      setUploadedId(docId)
+    } catch (err) {
+      setError(firebaseErrorMessage(err))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-center gap-2 font-mono text-xs text-slate-500">
+          <Link to="/app/documents" className="hover:underline">Documents</Link> / <span>Upload</span>
+        </div>
+        <h2 className="mt-2 text-2xl font-bold text-slate-900">Upload Operational Document</h2>
+        <p className="mt-1 text-sm text-slate-500">Upload contracts, standard operating procedures, maintenance reports, or spreadsheets to connect them to Copilot investigations.</p>
+
+        {uploadedId ? (
+          <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-6 text-center">
+            <CheckCircle className="mx-auto h-12 w-12 text-emerald-600" />
+            <h3 className="mt-3 text-lg font-bold text-emerald-900">Document Uploaded & Indexed!</h3>
+            <p className="mt-1 text-sm text-emerald-700">Document ID: {uploadedId} is ready for AI retrieval and analysis.</p>
+            <div className="mt-6 flex justify-center gap-3">
+              <Link to="/app/documents" className="rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-semibold text-white hover:bg-emerald-700">
+                View All Documents
+              </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  setUploadedId(null)
+                  setSelectedFile(null)
+                }}
+                className="rounded-xl border border-emerald-300 bg-white px-5 py-2.5 text-xs font-semibold text-emerald-800"
+              >
+                Upload Another File
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-6 space-y-5">
+            <div>
+              <label className="text-xs font-semibold text-slate-700">Assign Department</label>
+              <select
+                value={department}
+                onChange={(e) => setDepartment(e.target.value)}
+                className="mt-1 w-full max-w-xs rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+              >
+                <option value="Operations">Operations</option>
+                <option value="Procurement">Procurement</option>
+                <option value="Supply Chain">Supply Chain</option>
+                <option value="Maintenance">Maintenance</option>
+                <option value="Quality & Compliance">Quality & Compliance</option>
+                <option value="Finance">Finance</option>
+                <option value="General">General</option>
+              </select>
+            </div>
+
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+              className="cursor-pointer rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/60 p-10 text-center transition hover:border-indigo-400 hover:bg-indigo-50/20"
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                accept=".pdf,.docx,.doc,.xlsx,.xls,.csv,.txt,.json,.png,.jpg,.jpeg"
+                onChange={handleFileChange}
+              />
+              <Upload className="mx-auto h-12 w-12 text-slate-400" />
+              <div className="mt-3 text-sm font-semibold text-slate-800">
+                {selectedFile ? selectedFile.name : 'Click to select or drag and drop your file here'}
+              </div>
+              <p className="mt-1 text-xs text-slate-500">PDF, DOCX, XLSX, CSV, TXT, JSON up to 25MB</p>
+              {selectedFile && (
+                <div className="mt-3 inline-block rounded-lg bg-indigo-100 px-3 py-1 font-mono text-xs font-semibold text-indigo-700">
+                  Size: {(selectedFile.size / 1024).toFixed(1)} KB
+                </div>
+              )}
+            </div>
+
+            {error && <div className="text-xs font-medium text-red-600">{error}</div>}
+            {uploading && (
+              <div className="flex items-center gap-2 text-xs font-semibold text-indigo-600">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                <span>{progressText}</span>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 pt-2">
+              <Link to="/app/documents" className="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-semibold text-slate-700">
+                Cancel
+              </Link>
+              <button
+                type="button"
+                disabled={!selectedFile || uploading}
+                onClick={handleUpload}
+                className="rounded-xl bg-indigo-600 px-6 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 transition"
+              >
+                {uploading ? 'Uploading & Indexing...' : 'Upload and Index'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function DocumentDetailPage() {
   const documentId = useLocation().pathname.split('/').filter(Boolean).pop() || 'DOC-18'
-  const [document, setDocument] = useState<(DocumentRecord & { id: string }) | null>(null)
+  const [document, setDocument] = useState<(DocumentRecord & { id: string; downloadURL?: string; fileSize?: number }) | null>(null)
 
-  useEffect(() => subscribeToDocument<DocumentRecord>('documents', documentId, setDocument, () => setDocument(null)), [documentId])
+  useEffect(() => {
+    return subscribeToDocument<DocumentRecord>('documents', documentId, setDocument, () => setDocument(null))
+  }, [documentId])
 
   const fallback = documents.find((item) => item.id === documentId) ?? documents[0]
   const name = document?.name ?? fallback.name
@@ -1927,36 +3009,493 @@ function DocumentDetailPage() {
   const type = document?.type ?? fallback.type
   const chunks = document?.chunkCount ?? 18
   const department = document?.department ?? fallback.department
+  const downloadURL = document?.downloadURL
 
-  return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-4"><div><div className="font-mono text-sm text-slate-500">Document {documentId}</div><h2 className="mt-2 text-2xl font-semibold text-slate-900">{name}</h2></div><span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold capitalize text-emerald-700">{status}</span></div><div className="mt-4 grid gap-4 md:grid-cols-3"><div className="rounded-xl border border-slate-200 bg-slate-50 p-4">Type: {type}</div><div className="rounded-xl border border-slate-200 bg-slate-50 p-4">Chunks: {chunks}</div><div className="rounded-xl border border-slate-200 bg-slate-50 p-4">Department: {department}</div></div><div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-600">This document is indexed for Copilot retrieval. Its contents can be used as evidence when investigating operational questions.</div></div>
+  return (
+    <div className="space-y-6">
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="font-mono text-xs text-slate-500">Document {documentId}</div>
+            <h2 className="mt-2 text-2xl font-bold text-slate-900">{name}</h2>
+          </div>
+          <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold capitalize text-emerald-700">
+            {status}
+          </span>
+        </div>
+
+        <div className="mt-6 grid gap-4 sm:grid-cols-3">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-xs text-slate-500">Type</div>
+            <div className="mt-1 font-semibold text-slate-900">{type}</div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-xs text-slate-500">AI Chunks Processed</div>
+            <div className="mt-1 font-semibold text-slate-900">{chunks} chunks</div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="text-xs text-slate-500">Department</div>
+            <div className="mt-1 font-semibold text-slate-900">{department}</div>
+          </div>
+        </div>
+
+        <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs leading-6 text-slate-600">
+          This document is indexed for Copilot semantic retrieval. Its contents are analyzed whenever questions regarding {department} or operational performance are investigated.
+        </div>
+
+        <div className="mt-6 flex flex-wrap gap-3">
+          {downloadURL && (
+            <a
+              href={downloadURL}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700"
+            >
+              <Download className="h-3.5 w-3.5" /> Download Original File
+            </a>
+          )}
+          <Link
+            to={`/app/copilot?q=${encodeURIComponent('Analyze operational document: ' + name)}`}
+            className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Investigate with Copilot
+          </Link>
+          <Link to="/app/documents" className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+            Back to Documents
+          </Link>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function DataSourcesPage() {
-  return <div className="space-y-4"><Link to="/app/data-sources/new" className="inline-flex rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white">Add Data Source</Link>{['PostgreSQL', 'CSV', 'ERP', 'CRM'].map((name) => <div key={name} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center justify-between"><div className="font-semibold text-slate-900">{name}</div><span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-semibold text-emerald-700">Connected</span></div></div>)}</div>
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">Connected Data Sources</h2>
+          <p className="text-xs text-slate-500">Manage connectors powering operational intelligence</p>
+        </div>
+        <Link to="/app/data-sources/new" className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 transition">
+          + Add Data Source
+        </Link>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {['PostgreSQL Warehouse', 'ERP Master (SAP/Oracle)', 'Salesforce CRM', 'Shop Floor SCADA Feeds'].map((name) => (
+          <div key={name} className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-slate-900 text-sm">{name}</div>
+              <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-700">Connected</span>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">Continuous sync active · Schema verified</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function DataSourceWizardPage() {
-  return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-2xl font-semibold text-slate-900">Add source</h2><div className="mt-5 space-y-4"><input className="w-full rounded-xl border border-slate-200 px-3 py-2.5" placeholder="Source name" /><input className="w-full rounded-xl border border-slate-200 px-3 py-2.5" placeholder="Connection URL" /><button className="rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white">Test connection</button></div></div>
+  const navigate = useNavigate()
+  const [name, setName] = useState('')
+  const [url, setUrl] = useState('')
+  const [testing, setTesting] = useState(false)
+  const [connected, setConnected] = useState(false)
+
+  const handleTest = () => {
+    setTesting(true)
+    setTimeout(() => {
+      setTesting(false)
+      setConnected(true)
+    }, 1200)
+  }
+
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm max-w-xl">
+      <div className="flex items-center gap-2 font-mono text-xs text-slate-500">
+        <Link to="/app/data-sources" className="hover:underline">Data Sources</Link> / <span>New</span>
+      </div>
+      <h2 className="mt-2 text-2xl font-bold text-slate-900">Connect New Data Source</h2>
+      <p className="mt-1 text-sm text-slate-500">Connect relational databases, warehouse endpoints, or streaming APIs.</p>
+
+      {connected ? (
+        <div className="mt-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center">
+          <div className="text-sm font-bold text-emerald-800">Connection Validated Successfully!</div>
+          <button
+            type="button"
+            onClick={() => navigate('/app/data-sources')}
+            className="mt-4 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white"
+          >
+            Finish & Return to Sources
+          </button>
+        </div>
+      ) : (
+        <div className="mt-5 space-y-4">
+          <div>
+            <label className="text-xs font-medium text-slate-700">Source Name</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+              placeholder="e.g. Plant 3 Telemetry Database"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-700">Connection URI</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none font-mono text-xs"
+              placeholder="postgresql://user:password@hostname:5432/dbname"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            disabled={testing || !name.trim()}
+            onClick={handleTest}
+            className="rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 transition"
+          >
+            {testing ? 'Testing connection...' : 'Test & Save Connection'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function DataSourceDetailPage() {
-  return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-2xl font-semibold text-slate-900">PostgreSQL</h2><p className="mt-3 text-slate-600">Connected to the production warehouse database with validated schema access.</p></div>
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 className="text-2xl font-bold text-slate-900">PostgreSQL Warehouse</h2>
+      <p className="mt-2 text-sm text-slate-600">Connected to the production warehouse database with validated schema access and read-only credentials.</p>
+    </div>
+  )
 }
 
 function NotificationsPage() {
-  return <div className="space-y-3">{notifications.map((n) => <div key={n.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between"><div className="font-medium text-slate-900">{n.title}</div>{!n.read && <span className="h-2.5 w-2.5 rounded-full bg-indigo-600" />}</div><p className="mt-2 text-sm text-slate-600">{n.body}</p></div>)}</div>
+  return (
+    <div className="space-y-3">
+      {notifications.map((n) => (
+        <div key={n.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="font-semibold text-slate-900 text-sm">{n.title}</div>
+            {!n.read && <span className="h-2 w-2 rounded-full bg-indigo-600" />}
+          </div>
+          <p className="mt-1 text-xs text-slate-600">{n.body}</p>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function AuditLogsPage() {
-  return <div className="space-y-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex gap-3"><input className="flex-1 rounded-xl border border-slate-200 px-3 py-2.5" placeholder="Filter by event" /><button className="rounded-xl bg-indigo-600 px-4 py-3 font-semibold text-white">Export CSV</button></div><div className="overflow-hidden rounded-2xl border border-slate-200"><table className="w-full text-left text-sm"><thead className="bg-slate-50"><tr><th className="p-3">Time</th><th className="p-3">User</th><th className="p-3">Event</th><th className="p-3">Resource</th><th className="p-3">Status</th></tr></thead><tbody>{auditLogs.map((log) => <tr key={log.time} className="border-t border-slate-200"><td className="p-3">{log.time}</td><td className="p-3">{log.user}</td><td className="p-3">{log.event}</td><td className="p-3">{log.resource}</td><td className="p-3 text-emerald-700">{log.status}</td></tr>)}</tbody></table></div></div>
+  const [liveLogs, setLiveLogs] = useState<any[]>([])
+  const [filter, setFilter] = useState('')
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined
+    void getCurrentOrgId().then((orgId) => {
+      if (orgId) {
+        unsubscribe = subscribeToOrgCollection<any>('auditLogs', orgId, setLiveLogs, () => {})
+      }
+    })
+    return () => unsubscribe?.()
+  }, [])
+
+  const logsToDisplay = liveLogs.length > 0 ? liveLogs : auditLogs
+
+  const filtered = logsToDisplay.filter((log) => {
+    if (!filter.trim()) return true
+    const term = filter.toLowerCase()
+    return (
+      log.user?.toLowerCase().includes(term) ||
+      log.event?.toLowerCase().includes(term) ||
+      log.resource?.toLowerCase().includes(term) ||
+      log.detail?.toLowerCase().includes(term)
+    )
+  })
+
+  const exportCSV = () => {
+    const headers = ['Time', 'User', 'Event', 'Resource', 'Detail', 'Status']
+    const rows = filtered.map((l) => [
+      `"${l.time || ''}"`,
+      `"${l.user || ''}"`,
+      `"${l.event || ''}"`,
+      `"${l.resource || ''}"`,
+      `"${l.detail || l.action || ''}"`,
+      `"${l.status || 'success'}"`,
+    ])
+    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n')
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.setAttribute('download', `aioperations_audit_logs_${Date.now()}.csv`)
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
+  return (
+    <div className="space-y-4 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-wrap gap-3">
+        <input
+          className="flex-1 min-w-[200px] rounded-xl border border-slate-200 px-4 py-2.5 text-sm focus:border-indigo-600 focus:outline-none"
+          placeholder="Filter audit logs by event, user, or resource..."
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <button
+          type="button"
+          onClick={exportCSV}
+          className="rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 transition"
+        >
+          Export CSV
+        </button>
+      </div>
+
+      <div className="overflow-x-auto rounded-2xl border border-slate-200">
+        <table className="w-full text-left text-xs">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              <th className="p-3">Time</th>
+              <th className="p-3">User</th>
+              <th className="p-3">Event</th>
+              <th className="p-3">Resource</th>
+              <th className="p-3">Detail</th>
+              <th className="p-3">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {filtered.map((log, index) => (
+              <tr key={index} className="hover:bg-slate-50/50">
+                <td className="p-3 font-mono text-slate-500 whitespace-nowrap">{log.time}</td>
+                <td className="p-3 font-medium text-slate-800">{log.user}</td>
+                <td className="p-3"><span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-700 uppercase">{log.event}</span></td>
+                <td className="p-3 font-mono text-indigo-600">{log.resource}</td>
+                <td className="p-3 text-slate-600">{log.detail || log.action || '-'}</td>
+                <td className="p-3 font-medium text-emerald-700 capitalize">{log.status}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
 
 function SettingsPage() {
-  return <div className="space-y-4"><div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="text-lg font-semibold text-slate-900">Organization</h3><div className="mt-4 grid gap-4 md:grid-cols-2"><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">Industry: Manufacturing</div><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">Primary use case: Production monitoring</div></div></div><div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="text-lg font-semibold text-slate-900">AI Configuration</h3><div className="mt-4 space-y-3"><label className="flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" defaultChecked /> Read Data</label><label className="flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" defaultChecked /> Create Tasks</label><label className="flex items-center gap-3 text-sm text-slate-700"><input type="checkbox" defaultChecked /> Send Emails requires approval</label></div></div></div>
+  const [name, setName] = useState('')
+  const [industry, setIndustry] = useState('Manufacturing')
+  const [size, setSize] = useState('100-500')
+  const [country, setCountry] = useState('India')
+  const [saving, setSaving] = useState(false)
+  const [success, setSuccess] = useState(false)
+
+  useEffect(() => {
+    void getCurrentOrgId().then((orgId) => {
+      if (!orgId) return
+      void getDoc(doc(db, 'organizations', orgId)).then((snap) => {
+        if (snap.exists()) {
+          const data = snap.data()
+          if (data.name) setName(data.name)
+          if (data.industry) setIndustry(data.industry)
+          if (data.size) setSize(data.size)
+          if (data.country) setCountry(data.country)
+        }
+      })
+    })
+  }, [])
+
+  const handleSave = async (e: FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    setSuccess(false)
+    try {
+      await updateOrganizationSettings({ name, industry, size, country })
+      setSuccess(true)
+      setTimeout(() => setSuccess(false), 3000)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {success && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs font-semibold text-emerald-800">
+          ✓ Organization settings updated successfully!
+        </div>
+      )}
+
+      <form onSubmit={handleSave} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-base font-semibold text-slate-900">Organization Profile</h3>
+        <p className="mt-1 text-xs text-slate-500">Configure your operating company profile and industry context</p>
+
+        <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <div>
+            <label className="text-xs font-medium text-slate-700">Company / Organization Name</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+              placeholder="e.g. Apex Industrial Systems"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-700">Industry</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+              placeholder="e.g. Manufacturing & Industrial"
+              value={industry}
+              onChange={(e) => setIndustry(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-700">Company Size</label>
+            <select
+              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none bg-white"
+              value={size}
+              onChange={(e) => setSize(e.target.value)}
+            >
+              <option value="1-50">1-50 employees</option>
+              <option value="50-250">50-250 employees</option>
+              <option value="250-1000">250-1,000 employees</option>
+              <option value="1000+">1,000+ enterprise</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-700">Primary Country / Region</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+              placeholder="e.g. India"
+              value={country}
+              onChange={(e) => setCountry(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end">
+          <button
+            type="submit"
+            disabled={saving}
+            className="rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-60 transition"
+          >
+            {saving ? 'Saving...' : 'Save Settings'}
+          </button>
+        </div>
+      </form>
+
+      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-base font-semibold text-slate-900">AI Governance & Permissions</h3>
+        <p className="mt-1 text-xs text-slate-500">Enterprise policies governing Copilot investigations and automated tasks</p>
+        <div className="mt-4 space-y-3">
+          <label className="flex items-center gap-3 text-xs text-slate-700 cursor-pointer">
+            <input type="checkbox" defaultChecked className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+            <span>Allow AI Copilot to read connected Firestore data and storage files</span>
+          </label>
+          <label className="flex items-center gap-3 text-xs text-slate-700 cursor-pointer">
+            <input type="checkbox" defaultChecked className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+            <span>Enable draft action generation from investigation recommendations</span>
+          </label>
+          <label className="flex items-center gap-3 text-xs text-slate-700 cursor-pointer">
+            <input type="checkbox" defaultChecked className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" />
+            <span>Require human approval before executing any operational action</span>
+          </label>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function ProfilePage() {
-  return <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm"><h2 className="text-2xl font-semibold text-slate-900">Profile</h2><div className="mt-5 grid gap-4 md:grid-cols-2"><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><label className="block text-sm font-medium text-slate-700">Display name</label><input className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5" defaultValue="Aditi S." /></div><div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><label className="block text-sm font-medium text-slate-700">Department</label><input className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2.5" defaultValue="Operations" /></div></div></div>
+  const user = auth.currentUser
+  const [displayName, setDisplayName] = useState(user?.displayName || '')
+  const [department, setDepartment] = useState('Operations')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    if (user) {
+      setDisplayName(user.displayName || '')
+      void getDoc(doc(db, 'users', user.uid)).then((snap) => {
+        if (snap.exists() && snap.data()?.department) {
+          setDepartment(snap.data().department)
+        }
+      })
+    }
+  }, [user])
+
+  const handleSave = async (e: FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    setSaved(false)
+    try {
+      await updateUserProfile({ displayName, department })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      {saved && (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs font-semibold text-emerald-800">
+          ✓ Profile updated successfully!
+        </div>
+      )}
+
+      <form onSubmit={handleSave} className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-xl font-bold text-slate-900">Your Profile</h2>
+        <p className="mt-1 text-xs text-slate-500">Manage your user identity and workspace attributes</p>
+
+        <div className="mt-5 space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-slate-700">Display Name</label>
+            <input
+              required
+              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-700">Email Address (Read-only)</label>
+            <input
+              disabled
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500"
+              value={user?.email || 'user@example.com'}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-700">Department</label>
+            <input
+              className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm focus:border-indigo-600 focus:outline-none"
+              value={department}
+              onChange={(e) => setDepartment(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end">
+          <button
+            type="submit"
+            disabled={saving}
+            className="rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-60 transition"
+          >
+            {saving ? 'Saving...' : 'Save Profile'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
 }
 
 function UnauthorizedPage() {

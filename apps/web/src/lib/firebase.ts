@@ -19,7 +19,8 @@ import {
   type AuthProvider,
   type User,
 } from 'firebase/auth'
-import { collection, doc, getDoc, getDocs, getFirestore, limit, onSnapshot, query, setDoc, serverTimestamp, where, type Unsubscribe } from 'firebase/firestore'
+import { collection, doc, deleteDoc, getDoc, getDocs, getFirestore, limit, onSnapshot, query, setDoc, serverTimestamp, where, type Unsubscribe } from 'firebase/firestore'
+import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -34,6 +35,7 @@ const firebaseConfig = {
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig)
 const auth = getAuth(app)
 const db = getFirestore(app)
+const storage = getStorage(app)
 
 const appCheckSiteKey = import.meta.env.VITE_FIREBASE_APPCHECK_SITE_KEY
 if (appCheckSiteKey) {
@@ -63,7 +65,7 @@ const appleProvider = new OAuthProvider('apple.com')
 appleProvider.addScope('email')
 appleProvider.addScope('name')
 
-export { app, auth, db, googleProvider, appleProvider, firebaseAi, firebaseAiModel }
+export { app, auth, db, storage, googleProvider, appleProvider, firebaseAi, firebaseAiModel }
 
 export async function ensureUserProfile(user: User, name?: string) {
   const profileRef = doc(db, 'users', user.uid)
@@ -99,14 +101,26 @@ export async function getCurrentOrgId() {
 export function subscribeToOrgCollection<T>(collectionName: string, orgId: string, onData: (items: Array<T & { id: string }>) => void, onError: (error: Error) => void): Unsubscribe {
   const collectionQuery = query(collection(db, collectionName), where('orgId', '==', orgId))
   return onSnapshot(collectionQuery, (snapshot) => {
-    onData(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as T & { id: string })))
-  }, onError)
+    const items = snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as T & { id: string }))
+    items.sort((a: any, b: any) => {
+      const aTime = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0)
+      const bTime = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0)
+      return bTime - aTime
+    })
+    onData(items)
+  }, (err) => {
+    console.error(`[Firestore Subscription Error: ${collectionName}]`, err)
+    onError(err)
+  })
 }
 
 export function subscribeToDocument<T>(collectionName: string, id: string, onData: (item: (T & { id: string }) | null) => void, onError: (error: Error) => void): Unsubscribe {
   return onSnapshot(doc(db, collectionName, id), (snapshot) => {
     onData(snapshot.exists() ? ({ id: snapshot.id, ...snapshot.data() } as T & { id: string }) : null)
-  }, onError)
+  }, (err) => {
+    console.error(`[Firestore Document Error: ${collectionName}/${id}]`, err)
+    onError(err)
+  })
 }
 
 export async function completeOnboarding(user: User) {
@@ -131,6 +145,208 @@ export async function saveOrganizationProfile(user: User, profile: { name: strin
 
 export async function saveTeamInvites(user: User, invites: Array<{ email: string; role: string }>) {
   await setDoc(doc(db, 'users', user.uid), { invites, updatedAt: serverTimestamp() }, { merge: true })
+}
+
+export async function uploadDocument(file: File, department: string = 'General'): Promise<string> {
+  const user = auth.currentUser
+  if (!user) throw new Error('Authentication required.')
+  const orgId = await getCurrentOrgId()
+  if (!orgId) throw new Error('Organization not found. Complete onboarding first.')
+
+  const documentId = `DOC-${Date.now()}`
+  const storagePath = `orgs/${orgId}/documents/${documentId}/${file.name}`
+  const storageRef = ref(storage, storagePath)
+
+  // Upload file to Firebase Storage
+  await uploadBytes(storageRef, file)
+  const downloadURL = await getDownloadURL(storageRef)
+
+  // Determine type from extension
+  const ext = file.name.split('.').pop()?.toUpperCase() || 'FILE'
+  const typeMap: Record<string, string> = { PDF: 'PDF', DOCX: 'DOCX', DOC: 'DOCX', XLSX: 'XLSX', XLS: 'XLSX', CSV: 'CSV', TXT: 'TXT', JSON: 'JSON', PNG: 'Image', JPG: 'Image', JPEG: 'Image' }
+  const docType = typeMap[ext] || ext
+
+  // Create Firestore document record
+  await setDoc(doc(db, 'documents', documentId), {
+    orgId,
+    name: file.name,
+    type: docType,
+    department: department || 'General',
+    status: 'Ready',
+    uploaded: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+    storagePath,
+    downloadURL,
+    fileSize: file.size,
+    chunkCount: Math.max(1, Math.ceil(file.size / 2048)),
+    access: ['All Org'],
+    uploadedBy: user.uid,
+    uploaderName: user.displayName || user.email || 'Workspace User',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  })
+
+  // Log audit event
+  await addAuditLog(orgId, user, 'upload', documentId, `Uploaded ${file.name} to ${department || 'General'}`)
+
+  return documentId
+}
+
+export async function deleteDocument(documentId: string) {
+  const user = auth.currentUser
+  if (!user) throw new Error('Authentication required.')
+  const orgId = await getCurrentOrgId()
+  if (!orgId) throw new Error('Organization not found.')
+
+  // Try to delete from storage
+  const docSnap = await getDoc(doc(db, 'documents', documentId))
+  if (docSnap.exists() && docSnap.data()?.storagePath) {
+    try {
+      await deleteObject(ref(storage, docSnap.data().storagePath))
+    } catch { /* file may not exist in storage */ }
+  }
+
+  await deleteDoc(doc(db, 'documents', documentId))
+  await addAuditLog(orgId, user, 'delete', documentId, `Deleted document ${documentId}`)
+}
+
+export async function createRisk(risk: {
+  title: string
+  severity: 'Critical' | 'High' | 'Medium' | 'Low'
+  impact: string
+  recommendation: string
+}): Promise<string> {
+  const user = auth.currentUser
+  if (!user) throw new Error('Authentication required.')
+  const orgId = await getCurrentOrgId()
+  if (!orgId) throw new Error('Organization not found.')
+
+  const riskId = `R-${Math.floor(100 + Math.random() * 900)}`
+  await setDoc(doc(db, 'risks', riskId), {
+    orgId,
+    title: risk.title.trim(),
+    severity: risk.severity,
+    status: 'Open',
+    impact: risk.impact.trim(),
+    recommendation: risk.recommendation.trim(),
+    createdBy: user.uid,
+    creatorName: user.displayName || user.email || 'User',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  })
+
+  await addAuditLog(orgId, user, 'create_risk', riskId, `Created risk: ${risk.title}`)
+  return riskId
+}
+
+export async function updateRisk(riskId: string, updates: Partial<{
+  status: string
+  severity: 'Critical' | 'High' | 'Medium' | 'Low'
+  impact: string
+  recommendation: string
+}>) {
+  const user = auth.currentUser
+  if (!user) throw new Error('Authentication required.')
+  const orgId = await getCurrentOrgId()
+  if (!orgId) throw new Error('Organization not found.')
+
+  await setDoc(doc(db, 'risks', riskId), {
+    ...updates,
+    updatedAt: serverTimestamp(),
+  }, { merge: true })
+
+  await addAuditLog(orgId, user, 'update_risk', riskId, `Updated risk ${riskId}`)
+}
+
+export async function createAction(action: {
+  title: string
+  reason: string
+  priority?: string
+}): Promise<string> {
+  const user = auth.currentUser
+  if (!user) throw new Error('Authentication required.')
+  const orgId = await getCurrentOrgId()
+  if (!orgId) throw new Error('Organization not found.')
+
+  const actionId = `ACT-${Math.floor(2000 + Math.random() * 9000)}`
+  await setDoc(doc(db, 'actions', actionId), {
+    orgId,
+    title: action.title.trim(),
+    reason: action.reason.trim(),
+    priority: action.priority || 'Medium',
+    status: 'pending_approval',
+    requestedBy: user.displayName || user.email || 'Workspace User',
+    requestedById: user.uid,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  })
+
+  await addAuditLog(orgId, user, 'create_action', actionId, `Created action: ${action.title}`)
+  return actionId
+}
+
+export async function updateActionStatus(actionId: string, status: 'approved' | 'rejected' | 'completed') {
+  const user = auth.currentUser
+  if (!user) throw new Error('Authentication required.')
+  const orgId = await getCurrentOrgId()
+  if (!orgId) throw new Error('Organization not found.')
+
+  await setDoc(doc(db, 'actions', actionId), {
+    status,
+    reviewedBy: user.displayName || user.email || 'Workspace User',
+    reviewedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }, { merge: true })
+
+  await addAuditLog(orgId, user, 'action_review', actionId, `Changed action status to ${status}`)
+}
+
+export async function updateUserProfile(data: { displayName?: string; department?: string }) {
+  const user = auth.currentUser
+  if (!user) throw new Error('Authentication required.')
+
+  if (data.displayName && data.displayName.trim()) {
+    await updateProfile(user, { displayName: data.displayName.trim() })
+  }
+
+  await setDoc(doc(db, 'users', user.uid), {
+    displayName: data.displayName?.trim() || user.displayName || '',
+    department: data.department?.trim() || 'Operations',
+    updatedAt: serverTimestamp(),
+  }, { merge: true })
+}
+
+export async function updateOrganizationSettings(profile: { name?: string; industry?: string; size?: string; country?: string }) {
+  const user = auth.currentUser
+  if (!user) throw new Error('Authentication required.')
+  const orgId = await getCurrentOrgId()
+  if (!orgId) throw new Error('Organization not found.')
+
+  await setDoc(doc(db, 'organizations', orgId), {
+    ...profile,
+    updatedAt: serverTimestamp(),
+  }, { merge: true })
+
+  await setDoc(doc(db, 'users', user.uid), {
+    organization: profile,
+    updatedAt: serverTimestamp(),
+  }, { merge: true })
+
+  await addAuditLog(orgId, user, 'update_settings', orgId, 'Updated organization settings')
+}
+
+export async function addAuditLog(orgId: string, user: User, event: string, resource: string, detail: string) {
+  const logId = `LOG-${Date.now()}`
+  await setDoc(doc(db, 'auditLogs', logId), {
+    orgId,
+    time: new Date().toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' }),
+    user: user.displayName || user.email || 'System',
+    userId: user.uid,
+    event,
+    resource,
+    detail,
+    status: 'success',
+    createdAt: serverTimestamp(),
+  }).catch(() => undefined)
 }
 
 export async function requestPasswordReset(email: string) {
