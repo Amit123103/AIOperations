@@ -1,0 +1,166 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #F4F4EE;
+  --surface: #FBFBF7;
+  --border: #E3E3DA;
+  --ink: #17262A;
+  --ink-muted: #55636A;
+  --ink-faint: #8A959A;
+  --brand: #1F5FA8;
+  --brand-hover: #174C87;
+  --accent: #C8F135;
+  --critical: #DC2626;
+  --high: #EA580C;
+  --medium: #D97706;
+  --low: #2563EB;
+  --success: #16A34A;
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--ink);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+a {
+  text-decoration: none;
+}
+
+input, textarea, select {
+  outline: none;
+}
+
+@layer components {
+  .card-surface {
+      @apply rounded-2xl border bg-white shadow-sm;
+      border-color: var(--border);
+      background: var(--surface);
+  }
+}
+
+  html.dark {
+    --bg: #0E1518;
+    --surface: #141D21;
+    --border: #24323A;
+    --ink: #F1F3EC;
+    --ink-muted: #A3AFB5;
+    --ink-faint: #748188;
+    --brand: #5B9BE0;
+    --brand-hover: #78AFE9;
+  }
+
+  .headline {
+    color: var(--ink);
+    text-wrap: balance;
+  }
+
+  .headline-sans {
+    display: block;
+    font-family: 'Inter Tight', 'Inter', ui-sans-serif, sans-serif;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    line-height: 0.95;
+  }
+
+  .headline-serif {
+    display: block;
+    font-family: 'Instrument Serif', 'Newsreader', Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    letter-spacing: -0.01em;
+    line-height: 1;
+  }
+
+  .headline-serif .headline-period {
+    font-family: 'Inter Tight', 'Inter', ui-sans-serif, sans-serif;
+    font-style: normal;
+    font-weight: 800;
+  }
+  .headline.text-white { color: #FFFFFF !important; }
+
+  .headline-hero { font-size: clamp(2rem, 5vw, 5rem); }
+  .headline-page { font-size: clamp(2rem, 4vw, 3.25rem); }
+  .headline-section { font-size: clamp(1.75rem, 3vw, 2.5rem); }
+  .headline-card { font-size: 1.125rem; }
+
+  @media (max-width: 700px) {
+    .headline-hero { font-size: 2.35rem; }
+    .headline-page { font-size: 2rem; }
+  }
+
+  body, p { text-wrap: pretty; }
+
+  .bg-slate-50 { background-color: var(--bg) !important; }
+  .bg-white { background-color: var(--surface) !important; }
+  .border-slate-200 { border-color: var(--border) !important; }
+  .text-slate-900 { color: var(--ink) !important; }
+  .text-slate-800 { color: var(--ink) !important; }
+  .text-slate-700 { color: var(--ink-muted) !important; }
+  .text-slate-600 { color: var(--ink-muted) !important; }
+  .text-slate-500 { color: var(--ink-faint) !important; }
+  .text-indigo-600, .text-indigo-700 { color: var(--brand) !important; }
+  .bg-indigo-50 { background-color: color-mix(in srgb, var(--brand) 10%, var(--surface)) !important; }
+  .bg-indigo-600 { background-color: var(--brand) !important; }
+  .hover\:bg-indigo-700:hover { background-color: var(--brand-hover) !important; }
+  .app-shell.dark {
+    --bg: #0E1518;
+    --surface: #141D21;
+    --border: #24323A;
+    --ink: #F1F3EC;
+    --ink-muted: #A3AFB5;
+    --ink-faint: #748188;
+    --brand: #5B9BE0;
+    --brand-hover: #78AFE9;
+  }
+
+  input:not([type='checkbox']):not([type='radio']), textarea, select {
+    min-height: 48px;
+    border-radius: 12px;
+    border-color: var(--border);
+    background: var(--surface);
+    color: var(--ink);
+  }
+
+  input:not([type='checkbox']):not([type='radio']):focus, textarea:focus, select:focus {
+    border-color: var(--brand) !important;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
+  }
+
+  button, a { transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease, color 180ms ease; }
+  button:active, a:active { transform: scale(0.98); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+  }

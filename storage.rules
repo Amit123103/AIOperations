@@ -1,0 +1,16 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() { return request.auth != null; }
+    function isOrgMember(orgId) { return isSignedIn() && request.auth.token.orgId == orgId; }
+
+    match /orgs/{orgId}/documents/{fileName} {
+      allow read: if isSignedIn() && isOrgMember(orgId);
+      allow write: if isSignedIn() && isOrgMember(orgId) && request.resource.size < 25 * 1024 * 1024 && request.resource.contentType.matches('application/pdf|application/vnd.openxmlformats-officedocument.wordprocessingml.document|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet|text/csv|text/plain');
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

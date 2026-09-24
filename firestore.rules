@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() { return request.auth != null; }
+    function orgId() { return request.auth.token.orgId != null ? request.auth.token.orgId : null; }
+    function userDoc() { return exists(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function userRole() { return userDoc() ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role : 'employee'; }
+    function isOrgMember(org) { return isSignedIn() && userDoc() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.orgId == org; }
+    function hasPermission(permission) {
+      let role = userRole();
+      return role == 'admin' || (role == 'manager' && (permission in ['view_dashboard','view_risks','analyze_data','upload_documents','view_audit_logs']) ) || (role == 'analyst' && (permission in ['view_dashboard','view_risks','analyze_data','upload_documents'])) || (role == 'employee' && permission == 'view_dashboard');
+    }
+
+    match /organizations/{orgId} {
+      allow read: if isSignedIn() && isOrgMember(orgId);
+      allow write: if isSignedIn() && isOrgMember(orgId) && userRole() == 'admin';
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isOrgMember(resource.data.orgId));
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update, delete: if isSignedIn() && request.auth.uid == userId || (isSignedIn() && isOrgMember(resource.data.orgId) && userRole() == 'admin');
+    }
+
+    match /{document=**}/chunks/{chunkId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    match /dataSources/{id} {
+      allow read: if isSignedIn() && isOrgMember(resource.data.orgId);
+      allow create, update, delete: if isSignedIn() && isOrgMember(request.resource.data.orgId) && hasPermission('analyze_data');
+    }
+
+    match /documents/{docId} {
+      allow read: if isSignedIn() && isOrgMember(resource.data.orgId) && (resource.data.access == null || request.auth.uid in resource.data.access || resource.data.access.size() == 0);
+      allow create, update: if isSignedIn() && isOrgMember(request.resource.data.orgId) && hasPermission('upload_documents');
+      allow delete: if isSignedIn() && isOrgMember(resource.data.orgId) && userRole() == 'admin';
+    }
+
+    match /investigations/{id} {
+      allow read: if isSignedIn() && isOrgMember(resource.data.orgId);
+      allow create, update: if isSignedIn() && isOrgMember(request.resource.data.orgId) && hasPermission('analyze_data');
+    }
+
+    match /risks/{id} {
+      allow read: if isSignedIn() && isOrgMember(resource.data.orgId);
+      allow create, update: if isSignedIn() && isOrgMember(request.resource.data.orgId) && hasPermission('view_risks');
+    }
+
+    match /actions/{id} {
+      allow read: if isSignedIn() && isOrgMember(resource.data.orgId);
+      allow create: if isSignedIn() && isOrgMember(request.resource.data.orgId) && hasPermission('analyze_data');
+      allow update: if isSignedIn() && isOrgMember(resource.data.orgId) && (
+        (request.resource.data.status == 'approved' && userRole() in ['admin','manager']) ||
+        (request.resource.data.status == 'executing' && userRole() in ['admin','manager']) ||
+        (request.resource.data.status == 'rejected' && userRole() in ['admin','manager']) ||
+        (request.resource.data.status == 'completed' && userRole() in ['admin','manager'])
+      );
+      allow delete: if false;
+    }
+
+    match /auditLogs/{id} {
+      allow read: if isSignedIn() && isOrgMember(resource.data.orgId) && userRole() in ['admin','manager'];
+      allow create: if false;
+      allow update, delete: if false;
+    }
+
+    match /notifications/{id} {
+      allow read: if isSignedIn() && isOrgMember(resource.data.orgId) && request.auth.uid == resource.data.userId;
+      allow create, update: if isSignedIn() && isOrgMember(request.resource.data.orgId) && request.auth.uid == request.resource.data.userId;
+    }
+
+    match /{document=**} {
+      allow read: if false;
+      allow write: if false;
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "ai-operations-copilot",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "functions"
+  ],
+  "scripts": {
+    "dev": "npm --prefix apps/web run dev -- --host 0.0.0.0",
+    "build": "npm --prefix apps/web run build",
+    "lint": "npm --prefix apps/web run lint",
+    "firebase:emulators": "firebase emulators:start --only auth,firestore,functions,storage,hosting",
+    "seed": "npx tsx scripts/seed.ts",
+    "deploy:rules": "firebase deploy --only firestore:rules,firestore:indexes,storage",
+    "deploy:functions": "firebase deploy --only functions",
+    "deploy:hosting": "firebase deploy --only hosting",
+    "start": "npm run dev"
+  },
+  "devDependencies": {
+    "firebase-tools": "^14.11.2",
+    "tsx": "^4.19.4"
+  }
+}
