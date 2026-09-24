@@ -17,8 +17,25 @@
     "deploy:hosting": "firebase deploy --only hosting",
     "start": "npm run dev"
   },
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "devDependencies": {
     "firebase-tools": "^14.11.2",
     "tsx": "^4.19.4"
+  },
+  "optionalDependencies": {
+    "@rolldown/binding-linux-x64-gnu": "1.2.10",
+    "@rolldown/binding-linux-x64-musl": "1.2.10",
+    "@rolldown/binding-linux-arm64-gnu": "1.2.10",
+    "@rolldown/binding-win32-x64-msvc": "1.2.10",
+    "@rolldown/binding-darwin-arm64": "1.2.10",
+    "@rolldown/binding-darwin-x64": "1.2.10",
+    "lightningcss-linux-x64-gnu": "^1.33.0",
+    "lightningcss-linux-x64-musl": "^1.33.0",
+    "lightningcss-linux-arm64-gnu": "^1.33.0",
+    "lightningcss-win32-x64-msvc": "^1.33.0",
+    "lightningcss-darwin-arm64": "^1.33.0",
+    "lightningcss-darwin-x64": "^1.33.0"
   }
 }
