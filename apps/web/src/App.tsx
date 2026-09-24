@@ -58,6 +58,7 @@ import {
   resolveRedirectSignIn,
   requestPasswordReset,
   saveOrganizationProfile,
+  saveTeamInvites,
   sendWelcomeEmail,
   signInWithPassword,
   signInWithSocialProvider,
@@ -330,7 +331,13 @@ function Container({ children, className = '' }: { children: React.ReactNode; cl
 
 function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false)
-  const isAuthenticated = false
+  const [currentUser, setCurrentUser] = useState<User | null>(auth.currentUser)
+
+  useEffect(() => {
+    return onAuthStateChanged(auth, (u) => setCurrentUser(u))
+  }, [])
+
+  const isAuthenticated = !!currentUser
 
   const links = [
     { label: 'Features', href: '#features' },
@@ -794,12 +801,12 @@ function LoginPage() {
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const formData = new FormData(event.currentTarget)
-    const email = String(formData.get('email') || '')
+    const email = String(formData.get('email') || '').trim()
     const password = String(formData.get('password') || '')
 
     const nextErrors = { email: '', password: '' }
     if (!email.includes('@')) nextErrors.email = 'Enter a valid work email.'
-    if (password.length < 8) nextErrors.password = 'Your password must be at least 8 characters.'
+    if (password.length < 6) nextErrors.password = 'Your password must be at least 6 characters.'
 
     setErrors(nextErrors)
     setFormError('')
@@ -1047,12 +1054,39 @@ function OrganizationStep() {
   const user = auth.currentUser
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [orgName, setOrgName] = useState('')
+  const [industry, setIndustry] = useState('Manufacturing')
+  const [size, setSize] = useState('50-200')
+  const [country, setCountry] = useState('India')
+
+  useEffect(() => {
+    if (user) {
+      void getUserProfile(user).then((prof: any) => {
+        if (prof?.organization?.name) {
+          setOrgName(prof.organization.name)
+          if (prof.organization.industry) setIndustry(prof.organization.industry)
+          if (prof.organization.size) setSize(prof.organization.size)
+          if (prof.organization.country) setCountry(prof.organization.country)
+        }
+      }).catch(() => undefined)
+    }
+  }, [user])
 
   const handleContinue = () => {
     if (!user) return
+    const trimmed = orgName.trim()
+    if (!trimmed) {
+      setError('Please enter your organization or company name.')
+      return
+    }
     setLoading(true)
     setError('')
-    void saveOrganizationProfile(user, { name: 'Apex Manufacturing', industry: 'Manufacturing', size: '500-1000', country: 'India' })
+    void saveOrganizationProfile(user, {
+      name: trimmed,
+      industry: industry.trim() || 'Manufacturing',
+      size: size.trim() || '50-200',
+      country: country.trim() || 'India',
+    })
       .then(() => navigate('/onboarding/invite'))
       .catch((saveError: unknown) => setError(firebaseErrorMessage(saveError)))
       .finally(() => setLoading(false))
@@ -1061,15 +1095,62 @@ function OrganizationStep() {
   return (
     <div className="space-y-5">
       <div className="grid gap-5 md:grid-cols-2">
-        <div><label className="mb-2 block text-sm font-medium text-slate-700">Organization name</label><input className="w-full rounded-xl border border-slate-200 px-3 py-2.5" defaultValue="Apex Manufacturing" /></div>
-        <div><label className="mb-2 block text-sm font-medium text-slate-700">Industry</label><input className="w-full rounded-xl border border-slate-200 px-3 py-2.5" defaultValue="Manufacturing" /></div>
-        <div><label className="mb-2 block text-sm font-medium text-slate-700">Company size</label><input className="w-full rounded-xl border border-slate-200 px-3 py-2.5" defaultValue="500-1000" /></div>
-        <div><label className="mb-2 block text-sm font-medium text-slate-700">Country</label><input className="w-full rounded-xl border border-slate-200 px-3 py-2.5" defaultValue="India" /></div>
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-700">Organization name</label>
+          <input
+            className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500"
+            placeholder="e.g. Acme Operations"
+            value={orgName}
+            onChange={(e) => {
+              setOrgName(e.target.value)
+              if (error) setError('')
+            }}
+          />
+        </div>
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-700">Industry</label>
+          <select
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500"
+            value={industry}
+            onChange={(e) => setIndustry(e.target.value)}
+          >
+            <option value="Manufacturing">Manufacturing</option>
+            <option value="Logistics & Supply Chain">Logistics & Supply Chain</option>
+            <option value="Retail & E-commerce">Retail & E-commerce</option>
+            <option value="Energy & Utilities">Energy & Utilities</option>
+            <option value="Technology & SaaS">Technology & SaaS</option>
+            <option value="Healthcare & Pharma">Healthcare & Pharma</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-700">Company size</label>
+          <select
+            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500"
+            value={size}
+            onChange={(e) => setSize(e.target.value)}
+          >
+            <option value="1-10">1-10 employees</option>
+            <option value="11-50">11-50 employees</option>
+            <option value="50-200">50-200 employees</option>
+            <option value="200-1000">200-1000 employees</option>
+            <option value="1000+">1000+ employees</option>
+          </select>
+        </div>
+        <div>
+          <label className="mb-2 block text-sm font-medium text-slate-700">Country</label>
+          <input
+            className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none transition focus:border-indigo-500"
+            placeholder="Country"
+            value={country}
+            onChange={(e) => setCountry(e.target.value)}
+          />
+        </div>
       </div>
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm font-medium text-red-600">{error}</p>}
       <div className="flex justify-between">
-        <Link to="/onboarding/welcome" className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700">Back</Link>
-        <button onClick={handleContinue} disabled={loading} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white disabled:opacity-60">{loading ? 'Saving...' : 'Continue'}</button>
+        <Link to="/onboarding/welcome" className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700 hover:bg-slate-50 transition">Back</Link>
+        <button onClick={handleContinue} disabled={loading} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-60">{loading ? 'Saving...' : 'Continue'}</button>
       </div>
     </div>
   )
@@ -1077,23 +1158,161 @@ function OrganizationStep() {
 
 function InviteStep() {
   const navigate = useNavigate()
+  const user = auth.currentUser
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState('Manager')
+  const [invites, setInvites] = useState<Array<{ email: string; role: string }>>([])
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (user) {
+      void getUserProfile(user).then((prof: any) => {
+        if (Array.isArray(prof?.invites) && prof.invites.length > 0) {
+          setInvites(prof.invites)
+        }
+      }).catch(() => undefined)
+    }
+  }, [user])
+
+  const handleAddInvite = (e?: FormEvent) => {
+    if (e) e.preventDefault()
+    setError('')
+    const trimmed = inviteEmail.trim().toLowerCase()
+    if (!trimmed) {
+      setError('Please enter a team member email.')
+      return
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(trimmed)) {
+      setError('Please enter a valid email address (e.g. colleague@company.com).')
+      return
+    }
+    if (invites.some((item) => item.email.toLowerCase() === trimmed)) {
+      setError('This email has already been added to the invite list.')
+      return
+    }
+    if (user?.email && user.email.toLowerCase() === trimmed) {
+      setError('You are already the workspace administrator. Add a teammate’s email.')
+      return
+    }
+
+    setInvites((prev) => [...prev, { email: trimmed, role: inviteRole }])
+    setInviteEmail('')
+    setError('')
+  }
+
+  const handleRemoveInvite = (emailToRemove: string) => {
+    setInvites((prev) => prev.filter((item) => item.email !== emailToRemove))
+  }
+
+  const handleContinue = async () => {
+    if (user && invites.length > 0) {
+      setSaving(true)
+      try {
+        await saveTeamInvites(user, invites)
+      } catch (err) {
+        console.warn('Could not save invites to Firestore:', err)
+      } finally {
+        setSaving(false)
+      }
+    }
+    navigate('/onboarding/data')
+  }
+
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
-        <div className="grid gap-3 md:grid-cols-3">
-          <input className="rounded-xl border border-slate-200 px-3 py-2.5" placeholder="Email" defaultValue="priya@apex.in" />
-          <select className="rounded-xl border border-slate-200 px-3 py-2.5" defaultValue="manager"><option>Manager</option><option>Analyst</option><option>Employee</option></select>
-          <button className="rounded-xl bg-slate-800 px-3 py-2.5 font-medium text-white">Add</button>
+      <form onSubmit={handleAddInvite} className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
+        <div className="grid gap-3 sm:grid-cols-[1fr_150px_90px]">
+          <input
+            type="email"
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+            placeholder="colleague@company.com"
+            value={inviteEmail}
+            onChange={(e) => {
+              setInviteEmail(e.target.value)
+              if (error) setError('')
+            }}
+          />
+          <select
+            className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-700 outline-none focus:border-indigo-500"
+            value={inviteRole}
+            onChange={(e) => setInviteRole(e.target.value)}
+          >
+            <option value="Manager">Manager</option>
+            <option value="Analyst">Analyst</option>
+            <option value="Employee">Employee</option>
+          </select>
+          <button
+            type="submit"
+            className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 active:scale-[0.98]"
+          >
+            Add
+          </button>
         </div>
+        {error && <p className="mt-2 text-xs font-medium text-red-600">{error}</p>}
+      </form>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-2">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+            Team Members ({invites.length})
+          </span>
+          {user?.email && (
+            <span className="text-xs text-slate-500">
+              Admin: <span className="font-medium text-slate-700">{user.email}</span>
+            </span>
+          )}
+        </div>
+
+        {invites.length === 0 ? (
+          <div className="py-6 text-center text-sm text-slate-400">
+            No team members added yet. Type an email above to add members, or click Continue to skip for now.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {invites.map((item) => (
+              <div key={item.email} className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-100 text-xs font-semibold uppercase text-indigo-700">
+                    {item.email.charAt(0)}
+                  </div>
+                  <span className="text-sm font-medium text-slate-800">{item.email}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span
+                    className={cn(
+                      'rounded-full px-2.5 py-0.5 text-xs font-medium',
+                      item.role === 'Manager' ? 'bg-indigo-50 text-indigo-700 border border-indigo-100' :
+                      item.role === 'Analyst' ? 'bg-sky-50 text-sky-700 border border-sky-100' :
+                      'bg-slate-100 text-slate-700 border border-slate-200'
+                    )}
+                  >
+                    {item.role}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveInvite(item.email)}
+                    className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-red-600 transition"
+                    title="Remove member"
+                    aria-label={`Remove ${item.email}`}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
-      <div className="rounded-2xl border border-slate-200 p-4">
-        <div className="flex items-center justify-between text-sm"><span>priya@apex.in</span><span className="text-slate-500">Manager</span></div>
-      </div>
+
       <div className="flex justify-between">
-        <Link to="/onboarding/organization" className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700">Back</Link>
+        <Link to="/onboarding/organization" className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700 hover:bg-slate-50 transition">Back</Link>
         <div className="flex gap-3">
-          <button onClick={() => navigate('/onboarding/data')} className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700">Skip for now</button>
-          <button onClick={() => navigate('/onboarding/data')} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white">Continue</button>
+          <button onClick={() => navigate('/onboarding/data')} className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700 hover:bg-slate-50 transition">Skip for now</button>
+          <button onClick={handleContinue} disabled={saving} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-60">
+            {saving ? 'Saving...' : 'Continue'}
+          </button>
         </div>
       </div>
     </div>
@@ -1110,8 +1329,8 @@ function DataStep() {
         ))}
       </div>
       <div className="flex justify-between">
-        <Link to="/onboarding/invite" className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700">Back</Link>
-        <button onClick={() => navigate('/onboarding/ai-setup')} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white">Continue</button>
+        <Link to="/onboarding/invite" className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700 hover:bg-slate-50 transition">Back</Link>
+        <button onClick={() => navigate('/onboarding/ai-setup')} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white shadow-sm hover:bg-indigo-700 transition">Continue</button>
       </div>
     </div>
   )
@@ -1119,20 +1338,27 @@ function DataStep() {
 
 function AiSetupStep() {
   const navigate = useNavigate()
+  const [context, setContext] = useState('')
   return (
     <div className="space-y-6">
       <div>
         <label className="mb-2 block text-sm font-medium text-slate-700">Business context</label>
-        <textarea rows={5} className="w-full rounded-2xl border border-slate-200 px-3 py-2.5" defaultValue="We manufacture industrial components with high-margin SKUs. Our team needs early warnings for downtime, supplier delays, and stockout risk." />
+        <textarea
+          rows={5}
+          className="w-full rounded-2xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-indigo-500"
+          placeholder="Describe your company operations, key production lines, metrics, or areas you want the Copilot to monitor..."
+          value={context}
+          onChange={(e) => setContext(e.target.value)}
+        />
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         {['Production', 'Inventory', 'Maintenance', 'Sales', 'Finance', 'Suppliers'].map((domain) => (
-          <label key={domain} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700"><input type="checkbox" defaultChecked /> {domain}</label>
+          <label key={domain} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700 cursor-pointer hover:bg-slate-100 transition"><input type="checkbox" defaultChecked /> {domain}</label>
         ))}
       </div>
       <div className="flex justify-between">
-        <Link to="/onboarding/data" className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700">Back</Link>
-        <button onClick={() => navigate('/onboarding/complete')} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white">Complete setup</button>
+        <Link to="/onboarding/data" className="rounded-xl border border-slate-200 px-4 py-2.5 font-medium text-slate-700 hover:bg-slate-50 transition">Back</Link>
+        <button onClick={() => navigate('/onboarding/complete')} className="rounded-xl bg-indigo-600 px-5 py-2.5 font-semibold text-white shadow-sm hover:bg-indigo-700 transition">Complete setup</button>
       </div>
     </div>
   )
@@ -1141,6 +1367,17 @@ function AiSetupStep() {
 function CompleteStep() {
   const navigate = useNavigate()
   const user = auth.currentUser
+  const [invitedCount, setInvitedCount] = useState(0)
+
+  useEffect(() => {
+    if (user) {
+      void getUserProfile(user).then((prof: any) => {
+        if (Array.isArray(prof?.invites)) {
+          setInvitedCount(prof.invites.length)
+        }
+      }).catch(() => undefined)
+    }
+  }, [user])
 
   const handleComplete = () => {
     if (!user) return
@@ -1150,12 +1387,12 @@ function CompleteStep() {
   return (
     <div className="space-y-6">
       <div className="grid gap-4 md:grid-cols-3">
-        <InfoCard label="Data sources" value="7 connected" />
-        <InfoCard label="Documents" value="12 indexed" />
-        <InfoCard label="Users" value="4 invited" />
+        <InfoCard label="Data sources" value="Ready to connect" />
+        <InfoCard label="Documents" value="Knowledge base ready" />
+        <InfoCard label="Team" value={invitedCount > 0 ? `${invitedCount} invited` : '1 admin'} />
       </div>
       <div className="flex justify-end">
-        <button onClick={handleComplete} className="rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white">Open Dashboard</button>
+        <button onClick={handleComplete} className="rounded-xl bg-indigo-600 px-5 py-3 font-semibold text-white shadow-sm hover:bg-indigo-700 transition">Open Dashboard</button>
       </div>
     </div>
   )

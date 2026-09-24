@@ -114,8 +114,23 @@ export async function completeOnboarding(user: User) {
 }
 
 export async function saveOrganizationProfile(user: User, profile: { name: string; industry: string; size: string; country: string }) {
-  // Save org data directly to Firestore (no Cloud Functions needed)
-  await setDoc(doc(db, 'users', user.uid), { orgId: 'demo-manufacturing', role: 'admin', organization: profile, updatedAt: serverTimestamp() }, { merge: true })
+  // If user already has an orgId, keep it; otherwise create one based on their user id
+  const existingDoc = await getDoc(doc(db, 'users', user.uid)).catch(() => null)
+  const existingOrgId = existingDoc?.data()?.orgId
+  const orgId = existingOrgId || `org_${user.uid.slice(0, 10)}`
+  await setDoc(doc(db, 'users', user.uid), { orgId, role: 'admin', organization: profile, updatedAt: serverTimestamp() }, { merge: true })
+  await setDoc(doc(db, 'organizations', orgId), {
+    name: profile.name,
+    industry: profile.industry,
+    size: profile.size,
+    country: profile.country,
+    ownerId: user.uid,
+    updatedAt: serverTimestamp(),
+  }, { merge: true }).catch(() => undefined)
+}
+
+export async function saveTeamInvites(user: User, invites: Array<{ email: string; role: string }>) {
+  await setDoc(doc(db, 'users', user.uid), { invites, updatedAt: serverTimestamp() }, { merge: true })
 }
 
 export async function requestPasswordReset(email: string) {
